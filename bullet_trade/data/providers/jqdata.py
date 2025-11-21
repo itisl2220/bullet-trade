@@ -1,4 +1,4 @@
-from typing import Union, List, Optional, Dict, Any, Set
+from typing import Union, List, Optional, Dict, Any, Set, Callable, Tuple
 from datetime import datetime, date as Date
 import logging
 import os
@@ -49,6 +49,10 @@ _FINANCE_TABLE_STUB = _FinanceTableStub()
 
 class JQDataProvider(DataProvider):
     name: str = "jqdatasdk"
+    _DEFAULT_PRICE_FIELDS: List[str] = ['open', 'close', 'high', 'low', 'volume', 'money']
+    _PRICE_SCALE_FIELDS: Set[str] = {
+        'open', 'close', 'high', 'low', 'avg', 'price', 'high_limit', 'low_limit', 'pre_close'
+    }
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         self.config = config or {}
@@ -61,6 +65,7 @@ class JQDataProvider(DataProvider):
         )
         self._security_info_cache: Dict[str, Dict[str, Any]] = {}
         self._fund_membership_cache: Dict[str, Set[str]] = {}
+        self._price_engine_supported: Optional[bool] = None
 
     @staticmethod
     def _sanitize_env_value(value: str) -> str:
@@ -216,10 +221,38 @@ class JQDataProvider(DataProvider):
 
         # If a pre_factor_ref_date is explicitly provided for forward-adjusted data,
         # route to get_price_engine so the parameter is honored by jqdatasdk.
-        use_engine = (prefer_engine or pre_factor_ref_date is not None) and fq == 'pre'
-        method_name = 'get_price_engine' if use_engine else 'get_price'
-        fetch_fn = _fetch_price_engine if method_name == 'get_price_engine' else _fetch_price
-        return self._cache.cached_call(method_name, kwargs, fetch_fn, result_type='df')
+        should_try_engine = (prefer_engine or pre_factor_ref_date is not None) and fq == 'pre'
+
+        if should_try_engine and self._price_engine_supported is not False:
+            try:
+                result = self._cache.cached_call('get_price_engine', kwargs, _fetch_price_engine, result_type='df')
+                if self._price_engine_supported is None:
+                    self._price_engine_supported = True
+                return result
+            except Exception as exc:
+                if self._is_engine_missing_error(exc):
+                    if self._price_engine_supported is not False:
+                        logger.info("检测到 get_price_engine 不可用，使用复权因子回退: %s", exc)
+                    self._price_engine_supported = False
+                    return self._manual_prefactor_fallback(
+                        kwargs,
+                        _fetch_price,
+                        fields,
+                        pre_factor_ref_date,
+                        fq,
+                    )
+                raise
+
+        if should_try_engine and self._price_engine_supported is False:
+            return self._manual_prefactor_fallback(
+                kwargs,
+                _fetch_price,
+                fields,
+                pre_factor_ref_date,
+                fq,
+            )
+
+        return self._cache.cached_call('get_price', kwargs, _fetch_price, result_type='df')
 
     def get_security_info(self, security: str) -> Dict[str, Any]:
         if not security:
@@ -584,3 +617,159 @@ class JQDataProvider(DataProvider):
             return events
 
         return self._cache.cached_call('get_split_dividend', kwargs, _fetch, result_type='list_dict')
+
+    def _manual_prefactor_fallback(
+        self,
+        kwargs: Dict[str, Any],
+        fetch_fn: Callable[[Dict[str, Any]], pd.DataFrame],
+        requested_fields: Optional[Union[List[str], str]],
+        pre_factor_ref_date: Optional[Union[str, datetime]],
+        fq: str,
+    ) -> pd.DataFrame:
+        fallback_kwargs = dict(kwargs)
+        fallback_kwargs['prefer_engine'] = False
+        fields_with_factor, added_factor = self._prepare_fields_with_factor(requested_fields)
+        fallback_kwargs['fields'] = fields_with_factor
+        result = self._cache.cached_call('get_price', fallback_kwargs, fetch_fn, result_type='df')
+        return self._apply_prefactor_adjustment(
+            result,
+            fq=fq,
+            drop_factor=added_factor,
+        )
+
+    def _prepare_fields_with_factor(
+        self,
+        fields: Optional[Union[List[str], str]]
+    ) -> Tuple[Optional[List[str]], bool]:
+        if fields is None:
+            enriched = list(self._DEFAULT_PRICE_FIELDS)
+            enriched.append('factor')
+            return enriched, True
+        if isinstance(fields, str):
+            normalized = [fields]
+        elif isinstance(fields, tuple):
+            normalized = list(fields)
+        else:
+            normalized = list(fields)
+        if 'factor' in normalized:
+            return normalized, False
+        normalized.append('factor')
+        return normalized, True
+
+    def _apply_prefactor_adjustment(
+        self,
+        data: Any,
+        fq: str,
+        drop_factor: bool,
+    ) -> Any:
+        if data is None:
+            return data
+        if fq != 'pre':
+            return self._drop_factor_from_result(data) if drop_factor else data
+        try:
+            working = data.copy()
+        except Exception:
+            working = data
+        adjusted = self._adjust_dataframe_result(working)
+        if drop_factor:
+            adjusted = self._drop_factor_from_result(adjusted)
+        return adjusted
+    def _adjust_dataframe_result(self, data: Any) -> Any:
+        if isinstance(data, pd.DataFrame):
+            return self._adjust_dataframe(data)
+        if hasattr(data, 'to_frame'):
+            try:
+                df = data.to_frame()
+            except Exception:
+                return data
+            return self._adjust_dataframe(df)
+        return data
+
+    def _adjust_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        result_df = df.copy()
+        cols = result_df.columns
+        if isinstance(cols, pd.MultiIndex):
+            top_levels = list(cols.get_level_values(0))
+            if 'factor' not in top_levels:
+                return result_df
+            try:
+                factor_block = result_df.xs('factor', axis=1, level=0)
+            except Exception:
+                return result_df
+            ratio_df = self._compute_ratio_frame(factor_block)
+            if ratio_df is None:
+                return result_df
+            for field in self._PRICE_SCALE_FIELDS:
+                if field in top_levels:
+                    try:
+                        value_block = result_df.xs(field, axis=1, level=0)
+                    except Exception:
+                        continue
+                    scaled = value_block.multiply(ratio_df, fill_value=0.0)
+                    for code in scaled.columns:
+                        result_df[(field, code)] = scaled[code]
+            return result_df
+
+        base_cols = list(result_df.columns)
+        has_factor = 'factor' in base_cols
+        if has_factor and 'code' in base_cols and 'time' in base_cols:
+            return self._adjust_long_dataframe(result_df)
+        if has_factor:
+            ratio_series = self._compute_ratio_series(result_df['factor'])
+            for field in self._PRICE_SCALE_FIELDS:
+                if field in result_df.columns:
+                    result_df[field] = result_df[field].multiply(ratio_series, fill_value=0.0)
+            return result_df
+        return result_df
+
+    def _adjust_long_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        working = df.copy()
+        if 'time' not in working.columns or 'code' not in working.columns or 'factor' not in working.columns:
+            return working
+        ratio = self._compute_ratio_series(working['factor'])
+        for field in self._PRICE_SCALE_FIELDS:
+            if field in working.columns:
+                working[field] = working[field] * ratio
+        return working
+
+    def _compute_ratio_frame(self, factor_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        if factor_df is None or factor_df.empty:
+            return None
+        ratio_columns: Dict[str, pd.Series] = {}
+        for col in factor_df.columns:
+            ratio_columns[col] = self._compute_ratio_series(factor_df[col])
+        ratio_df = pd.DataFrame(ratio_columns)
+        ratio_df = ratio_df.reindex(factor_df.index)
+        ratio_df.replace([float('inf'), float('-inf')], float('nan'), inplace=True)
+        ratio_df = ratio_df.ffill().bfill()
+        ratio_df.fillna(1.0, inplace=True)
+        return ratio_df
+
+    def _compute_ratio_series(self, series: pd.Series) -> pd.Series:
+        if series is None or series.empty:
+            return pd.Series([], index=series.index if isinstance(series, pd.Series) else None, dtype=float)
+        denom = pd.to_numeric(series, errors='coerce')
+        denom.replace(0.0, float('nan'), inplace=True)
+        ratio = 1.0 / denom
+        ratio.replace([float('inf'), float('-inf')], float('nan'), inplace=True)
+        ratio = ratio.ffill().bfill()
+        ratio.fillna(1.0, inplace=True)
+        return ratio
+
+    def _drop_factor_from_result(self, data: Any) -> Any:
+        if isinstance(data, pd.DataFrame):
+            if isinstance(data.columns, pd.MultiIndex):
+                if 'factor' in data.columns.get_level_values(0):
+                    return data.drop(columns='factor', level=0)
+                return data
+            if 'factor' in data.columns:
+                return data.drop(columns=['factor'])
+            return data
+        return data
+
+    @staticmethod
+    def _is_engine_missing_error(exc: Exception) -> bool:
+        message = str(exc)
+        return 'get_price_engine' in message
