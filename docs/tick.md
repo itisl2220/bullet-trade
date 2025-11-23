@@ -18,18 +18,22 @@
    服务端需已通过 `bullet-trade server --enable-data --enable-broker` 启动。
 2. 在策略中声明订阅并实现回调：
    ```python
-   def initialize(context):
-       # 订阅两个标的的 tick
-       subscribe(['000001.XSHE', '000002.XSHE'], 'tick')
+    def initialize(context):
+        # 首次启动或回测中订阅；Live 重启后建议在 process_initialize 再调一次
+        subscribe(['000001.XSHE', '000002.XSHE'], 'tick')
 
-   def handle_tick(context, tick):
-       # tick 至少包含 sid/last_price/dt；远程推送时还会附带 symbol（QMT 代码）
-       sid = tick.get('sid') or tick.get('symbol')
-       ts = tick.get('dt') or tick.get('time')
-       log.info(
-           f"[TICK] sid={sid} last={tick.get('last_price') or tick.get('lastPrice')} "
-           f"ask1={tick.get('ask1')} bid1={tick.get('bid1')} ts={ts}"
-       )
+    def process_initialize(context):
+        # Live 场景重启或热更新后，确保券商侧也已订阅
+        subscribe(['000001.XSHE', '000002.XSHE'], 'tick')
+
+    def handle_tick(context, tick):
+        # tick 至少含 sid/last_price/dt；远程推送时可能附带 symbol（QMT 代码）
+        sid = tick.get('sid') or tick.get('symbol')
+        ts = tick.get('dt') or tick.get('time')
+        log.info(
+            f"[TICK] sid={sid} last={tick.get('last_price') or tick.get('lastPrice')} "
+            f"ask1={tick.get('ask1')} bid1={tick.get('bid1')} ts={ts}"
+        )
    ```
 3. 启动实盘：  
    `bullet-trade live strategies/demo.py --broker qmt-remote --env-file .env.live`
