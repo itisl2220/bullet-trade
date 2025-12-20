@@ -26,6 +26,7 @@ from PyQt6.QtGui import QFont
 
 from ..theme import get_button_danger_style, get_log_text_style, COLORS
 from ..config_manager import ConfigManager
+from ..widgets.strategy_params_widget import StrategyParamsWidget
 
 
 class GuiLogHandler(logging.Handler):
@@ -58,12 +59,13 @@ class LiveWorker(QThread):
     output = pyqtSignal(str)
     finished = pyqtSignal(int)
 
-    def __init__(self, strategy_file, broker_name, runtime_dir, log_dir):
+    def __init__(self, strategy_file, broker_name, runtime_dir, log_dir, strategy_params=None):
         super().__init__()
         self.strategy_file = strategy_file
         self.broker_name = broker_name
         self.runtime_dir = runtime_dir
         self.log_dir = log_dir
+        self.strategy_params = strategy_params or {}
         self._running = True
 
     def run(self):
@@ -110,6 +112,7 @@ class LiveWorker(QThread):
                 strategy_file=self.strategy_file,
                 broker_name=self.broker_name,
                 live_config=overrides or None,
+                strategy_params=self.strategy_params,
             )
 
             self.output.emit("启动实盘引擎...")
@@ -260,6 +263,14 @@ class LivePage(QWidget):
 
         left_layout.addWidget(config_group)
 
+        # 策略参数配置
+        self.params_widget = StrategyParamsWidget()
+        self.params_widget.setMinimumHeight(250)  # 设置最小高度
+        left_layout.addWidget(self.params_widget, 1)  # 设置拉伸因子，使其占据更多空间
+        
+        # 当策略文件改变时，加载参数
+        self.strategy_file_edit.textChanged.connect(self._on_strategy_file_changed)
+
         # 控制按钮
         button_layout = QHBoxLayout()
         self.start_btn = QPushButton("启动实盘")
@@ -314,6 +325,13 @@ class LivePage(QWidget):
         )
         if file_path:
             self.strategy_file_edit.setText(file_path)
+            self._on_strategy_file_changed()
+    
+    def _on_strategy_file_changed(self):
+        """策略文件改变时的处理"""
+        strategy_file = self.strategy_file_edit.text().strip()
+        if strategy_file and Path(strategy_file).exists():
+            self.params_widget.load_strategy_params(strategy_file)
 
     def _browse_runtime_dir(self):
         """浏览运行时目录"""
@@ -474,12 +492,16 @@ class LivePage(QWidget):
             QMessageBox.warning(self, "错误", "请选择有效的策略文件")
             return
 
+        # 获取策略参数
+        strategy_params = self.params_widget.get_params()
+        
         # 启动工作线程
         self.worker = LiveWorker(
             strategy_file=strategy_file,
             broker_name=self.broker_combo.currentText(),
             runtime_dir=self.runtime_dir_edit.text().strip() or None,
             log_dir=self.log_dir_edit.text().strip() or None,
+            strategy_params=strategy_params,
         )
 
         self.worker.output.connect(self._append_log)
@@ -544,3 +566,4 @@ class LivePage(QWidget):
     def set_strategy_file(self, file_path: str):
         """设置策略文件（由主窗口调用）"""
         self.strategy_file_edit.setText(file_path)
+        self._on_strategy_file_changed()

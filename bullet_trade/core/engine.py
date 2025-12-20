@@ -70,6 +70,7 @@ class BacktestEngine:
         before_trading_start: Optional[Callable] = None,
         after_trading_end: Optional[Callable] = None,
         process_initialize: Optional[Callable] = None,
+        strategy_params: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化回测引擎
@@ -91,8 +92,10 @@ class BacktestEngine:
             before_trading_start: 盘前调用的函数
             after_trading_end: 盘后调用的函数
             process_initialize: 实盘初始化函数
+            strategy_params: 策略参数字典，将覆盖策略文件中的g.变量默认值
         """
         self.strategy_file = strategy_file
+        self.strategy_params = strategy_params or {}
         self.start_date = pd.to_datetime(start_date) if start_date else None
         self.end_date = pd.to_datetime(end_date) if end_date else None
         self.frequency = frequency
@@ -471,6 +474,59 @@ class BacktestEngine:
             try:
                 self.initialize_func(self.context)
                 log.info("策略初始化完成")
+                
+                # 应用策略参数（在initialize调用后覆盖g.变量）
+                if self.strategy_params:
+                    from bullet_trade.core.globals import g
+                    # 获取策略模块（用于特殊处理）
+                    import sys
+                    strategy_module = sys.modules.get("strategy")
+                    
+                    # 注入数据API到策略模块（如果需要）
+                    if strategy_module and 'get_index_stocks' not in dir(strategy_module):
+                        from ..data import api as data_api
+                        strategy_module.get_index_stocks = data_api.get_index_stocks
+                    
+                    applied_count = 0
+                    for param_name, param_value in self.strategy_params.items():
+                        try:
+                            # 特殊处理：如果参数名是stock_pool或stocks且值是字符串（索引代码），转换为股票列表
+                            if param_name in ('stock_pool', 'stocks') and isinstance(param_value, str):
+                                if strategy_module and hasattr(strategy_module, 'get_index_stocks'):
+                                    try:
+                                        # 尝试作为索引代码处理
+                                        stock_list = strategy_module.get_index_stocks(param_value)
+                                        setattr(g, param_name, stock_list)
+                                        log.info(f"应用策略参数: {param_name} = {param_value} (转换为{len(stock_list)}只股票)")
+                                        applied_count += 1
+                                        continue
+                                    except Exception:
+                                        pass
+                                
+                                # 如果失败，尝试作为逗号分隔的股票代码列表
+                                if ',' in param_value:
+                                    stock_list = [s.strip() for s in param_value.split(',') if s.strip()]
+                                    setattr(g, param_name, stock_list)
+                                    log.info(f"应用策略参数: {param_name} = {len(stock_list)}只股票（从列表）")
+                                    applied_count += 1
+                                    continue
+                                else:
+                                    # 作为单个股票代码
+                                    setattr(g, param_name, [param_value])
+                                    log.info(f"应用策略参数: {param_name} = [{param_value}]")
+                                    applied_count += 1
+                                    continue
+                            
+                            # 普通参数直接设置
+                            setattr(g, param_name, param_value)
+                            log.info(f"应用策略参数: {param_name} = {param_value}")
+                            applied_count += 1
+                        except Exception as e:
+                            log.warning(f"应用策略参数失败 {param_name}: {e}")
+                    
+                    if applied_count > 0:
+                        log.info(f"已应用 {applied_count} 个策略参数")
+                
                 # 根据 extras 覆盖 g.xxx（在策略初始化后执行）
                 try:
                     if self.extras:

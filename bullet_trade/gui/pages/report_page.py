@@ -4,6 +4,7 @@
 
 import os
 from pathlib import Path
+import webbrowser
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -17,9 +18,17 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QFileDialog,
     QMessageBox,
+    QDialog,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QFont
+
+try:
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+    WEBENGINE_AVAILABLE = True
+except ImportError:
+    WEBENGINE_AVAILABLE = False
 
 from ..theme import get_button_primary_style
 
@@ -176,9 +185,14 @@ class ReportPage(QWidget):
     def _open_report(self):
         """打开报告"""
         report_file = self.open_btn.property("report_file")
-        if report_file and Path(report_file).exists():
-            import webbrowser
-            webbrowser.open(f"file:///{Path(report_file).absolute()}")
-        else:
+        if not report_file or not Path(report_file).exists():
             QMessageBox.warning(self, "错误", "报告文件不存在")
+            return
+        # 使用系统默认浏览器打开报告文件（回退到外部浏览器打开）
+        report_path = Path(report_file).absolute()
+        try:
+            webbrowser.open(report_path.as_uri())
+            self.info_text.append(f"已在默认浏览器中打开: {report_file}")
+        except Exception as e:
+            QMessageBox.warning(self, "打开失败", f"无法在浏览器中打开报告: {e}")
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime
 import hashlib
 import logging
+import webbrowser
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -34,6 +35,7 @@ except ImportError:
     WEBENGINE_AVAILABLE = False
 
 from ..theme import get_button_primary_style, get_log_text_style
+from ..widgets.strategy_params_widget import StrategyParamsWidget
 
 
 class GuiLogHandler(logging.Handler):
@@ -82,6 +84,7 @@ class BacktestWorker(QThread):
         generate_csv,
         generate_html,
         data_provider=None,
+        strategy_params=None,
     ):
         super().__init__()
         self.strategy_file = strategy_file
@@ -95,6 +98,7 @@ class BacktestWorker(QThread):
         self.generate_csv = generate_csv
         self.generate_html = generate_html
         self.data_provider = data_provider
+        self.strategy_params = strategy_params or {}
 
     def run(self):
         """运行回测"""
@@ -128,6 +132,7 @@ class BacktestWorker(QThread):
                 initial_cash=self.initial_cash,
                 benchmark=self.benchmark,
                 log_file=str(Path(self.output_dir) / "backtest.log"),
+                strategy_params=self.strategy_params,
             )
 
             self.output.emit("开始回测...")
@@ -281,6 +286,14 @@ class BacktestPage(QWidget):
 
         left_layout.addWidget(config_group)
 
+        # 策略参数配置
+        self.params_widget = StrategyParamsWidget()
+        self.params_widget.setMinimumHeight(250)  # 设置最小高度
+        left_layout.addWidget(self.params_widget, 1)  # 设置拉伸因子，使其占据更多空间
+
+        # 当策略文件改变时，加载参数
+        self.strategy_file_edit.textChanged.connect(self._on_strategy_file_changed)
+
         # 控制按钮
         button_layout = QHBoxLayout()
         self.start_btn = QPushButton("开始回测")
@@ -330,6 +343,13 @@ class BacktestPage(QWidget):
         )
         if file_path:
             self.strategy_file_edit.setText(file_path)
+            self._on_strategy_file_changed()
+
+    def _on_strategy_file_changed(self):
+        """策略文件改变时的处理"""
+        strategy_file = self.strategy_file_edit.text().strip()
+        if strategy_file and Path(strategy_file).exists():
+            self.params_widget.load_strategy_params(strategy_file)
 
     def _browse_output_dir(self):
         """浏览输出目录"""
@@ -377,6 +397,9 @@ class BacktestPage(QWidget):
         if data_provider == "miniqmt":
             data_provider = "qmt"  # miniqmt 和 qmt 是同一个提供者
 
+        # 获取策略参数
+        strategy_params = self.params_widget.get_params()
+
         # 启动工作线程
         self.worker = BacktestWorker(
             strategy_file=strategy_file,
@@ -392,6 +415,7 @@ class BacktestPage(QWidget):
             data_provider=(
                 data_provider if data_provider != "jqdata" else None
             ),  # jqdata是默认，不需要设置
+            strategy_params=strategy_params,
         )
 
         self.worker.output.connect(self._append_log)
@@ -438,36 +462,15 @@ class BacktestPage(QWidget):
 
     def _show_report(self, report_file: str):
         """显示报告窗口"""
-        if not WEBENGINE_AVAILABLE:
-            # 如果没有WebEngine，使用系统默认浏览器打开
-            import webbrowser
-
-            report_path = Path(report_file).absolute()
-            webbrowser.open(f"file:///{report_path}")
-            self._append_log(f"已在浏览器中打开报告: {report_file}")
-            return
-
-        # 创建WebView窗口
-        report_window = QDialog(self)
-        report_window.setWindowTitle(f"回测报告 - {Path(report_file).parent.name}")
-        report_window.setMinimumSize(1200, 800)
-
-        layout = QVBoxLayout(report_window)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # 创建WebView
-        web_view = QWebEngineView()
+        # 使用系统默认浏览器打开报告文件（回退到外部浏览器打开）
         report_path = Path(report_file).absolute()
-        web_view.setUrl(QUrl.fromLocalFile(str(report_path)))
-        layout.addWidget(web_view)
-
-        # 显示窗口
-        report_window.show()
-        report_window.raise_()
-        report_window.activateWindow()
-
-        self._append_log(f"报告窗口已打开: {report_file}")
+        try:
+            webbrowser.open(report_path.as_uri())
+            self._append_log(f"已在默认浏览器中打开报告: {report_file}")
+        except Exception as e:
+            QMessageBox.warning(self, "打开失败", f"无法在浏览器中打开报告: {e}")
 
     def set_strategy_file(self, file_path: str):
         """设置策略文件（由主窗口调用）"""
         self.strategy_file_edit.setText(file_path)
+        self._on_strategy_file_changed()

@@ -168,10 +168,12 @@ class LiveEngine:
         broker_factory: Optional[Callable[[], BrokerBase]] = None,
         now_provider: Optional[Callable[[], datetime]] = None,
         sleep_provider: Optional[Callable[[float], Awaitable[None]]] = None,
+        strategy_params: Optional[Dict[str, Any]] = None,
     ):
         self.strategy_path = Path(strategy_file).resolve()
         self.broker_name = broker_name
         self.config = LiveConfig.load(live_config)
+        self.strategy_params = strategy_params or {}
         self._broker_factory = broker_factory
         self._now = now_provider or datetime.now
         self._sleep = sleep_provider
@@ -275,7 +277,9 @@ class LiveEngine:
         if not self.strategy_path.exists():
             raise FileNotFoundError(f"策略文件不存在: {self.strategy_path}")
 
-        self._strategy_loader = BacktestEngine(strategy_file=str(self.strategy_path))
+        self._strategy_loader = BacktestEngine(
+            strategy_file=str(self.strategy_path), strategy_params=self.strategy_params
+        )
         self._strategy_loader.load_strategy()
         self.initialize_func = self._strategy_loader.initialize_func
         self.handle_data_func = self._strategy_loader.handle_data_func

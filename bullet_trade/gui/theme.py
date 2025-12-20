@@ -172,10 +172,10 @@ def get_main_stylesheet() -> str:
         color: {COLORS['text_primary']};
         border: 1px solid {COLORS['border_medium']};
         border-radius: {RADIUS['md']};
-        padding: 5px {SPACING['lg']};
+        padding: 2px {SPACING['lg']};
         font-weight: 500;
-        min-height: 28px;
-        height: 28px;
+        min-height: 14px;
+        height: 14px;
     }}
     
     QPushButton:hover {{
@@ -217,16 +217,16 @@ def get_main_stylesheet() -> str:
         color: {COLORS['text_primary']};
         border: 1px solid {COLORS['border_medium']};
         border-radius: {RADIUS['md']};
-        padding: 5px {SPACING['md']};
-        min-height: 28px;
-        height: 28px;
+        padding: 2px {SPACING['md']};
+        min-height: 14px;
+        height: 14px;
         selection-background-color: {COLORS['primary_light']};
         selection-color: {COLORS['text_white']};
     }}
     
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
         border: 2px solid {COLORS['primary']};
-        padding: 4px 11px;
+        padding: 1px 10px;
     }}
     
     QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {{
@@ -241,9 +241,9 @@ def get_main_stylesheet() -> str:
         color: {COLORS['text_primary']};
         border: 1px solid {COLORS['border_medium']};
         border-radius: {RADIUS['md']};
-        padding: 5px {SPACING['md']};
-        min-height: 28px;
-        height: 28px;
+        padding: 2px {SPACING['md']};
+        min-height: 14px;
+        height: 14px;
     }}
     
     QComboBox:hover {{
@@ -252,7 +252,7 @@ def get_main_stylesheet() -> str:
     
     QComboBox:focus {{
         border: 2px solid {COLORS['primary']};
-        padding: 4px 11px;
+        padding: 1px 10px;
     }}
     
     QComboBox::drop-down {{
@@ -304,14 +304,14 @@ def get_main_stylesheet() -> str:
         color: {COLORS['text_primary']};
         border: 1px solid {COLORS['border_medium']};
         border-radius: {RADIUS['md']};
-        padding: 5px {SPACING['md']};
-        min-height: 28px;
-        height: 28px;
+        padding: 2px {SPACING['md']};
+        min-height: 14px;
+        height: 14px;
     }}
     
     QDateEdit:focus {{
         border: 2px solid {COLORS['primary']};
-        padding: 4px 11px;
+        padding: 1px 10px;
     }}
     
     /* 数字输入框 */
@@ -320,14 +320,14 @@ def get_main_stylesheet() -> str:
         color: {COLORS['text_primary']};
         border: 1px solid {COLORS['border_medium']};
         border-radius: {RADIUS['md']};
-        padding: 5px {SPACING['md']};
-        min-height: 28px;
-        height: 28px;
+        padding: 2px {SPACING['md']};
+        min-height: 14px;
+        height: 14px;
     }}
     
     QSpinBox:focus, QDoubleSpinBox:focus {{
         border: 2px solid {COLORS['primary']};
-        padding: 4px 11px;
+        padding: 1px 10px;
     }}
     
     /* 分组框 */
@@ -441,10 +441,10 @@ def get_main_stylesheet() -> str:
         color: {COLORS['text_primary']};
         border: 1px solid {COLORS['border_medium']};
         border-radius: {RADIUS['md']};
-        padding: 5px {SPACING['xl']};
+        padding: 2px {SPACING['xl']};
         min-width: 80px;
-        min-height: 28px;
-        height: 28px;
+        min-height: 14px;
+        height: 14px;
         font-weight: 500;
     }}
     
@@ -484,10 +484,10 @@ def get_button_primary_style() -> str:
         color: {COLORS['text_white']};
         border: none;
         border-radius: {RADIUS['md']};
-        padding: 5px {SPACING['lg']};
+        padding: 2px {SPACING['lg']};
         font-weight: 500;
-        min-height: 28px;
-        height: 28px;
+        min-height: 14px;
+        height: 14px;
     }}
     QPushButton:hover {{
         background-color: {COLORS['primary_hover']};
@@ -510,10 +510,10 @@ def get_button_danger_style() -> str:
         color: {COLORS['text_white']};
         border: none;
         border-radius: {RADIUS['md']};
-        padding: 5px {SPACING['lg']};
+        padding: 2px {SPACING['lg']};
         font-weight: 500;
-        min-height: 28px;
-        height: 28px;
+        min-height: 14px;
+        height: 14px;
     }}
     QPushButton:hover {{
         background-color: #DC2626;
