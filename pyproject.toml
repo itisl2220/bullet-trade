@@ -72,8 +72,12 @@ report = [
     "chromedriver-autoinstaller>=0.6.0",
     "snapshot-phantomjs>=0.0.3",
 ]
+gui = [
+    "PyQt6>=6.4.0",
+    "PyQt6-WebEngine>=6.4.0",
+]
 all = [
-    "bullet-trade[dev,tushare,qmt,qmtserver,report]",
+    "bullet-trade[dev,tushare,qmt,qmtserver,report,gui]",
 ]
 
 [project.urls]
@@ -84,6 +88,7 @@ Changelog = "https://github.com/BulletTrade/bullet-trade/blob/main/CHANGELOG.md"
 
 [project.scripts]
 bullet-trade = "bullet_trade.cli.main:main"
+bullet-trade-gui = "bullet_trade.gui.app:main"
 
 [tool.setuptools.packages.find]
 include = ["bullet_trade*", "helpers*"]

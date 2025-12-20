@@ -72,6 +72,9 @@ def create_parser():
   # 参数优化
   bullet-trade optimize strategy.py --params params.json --start 2023-01-01 --end 2023-12-31 --output optimization.csv --processes 4
 
+  # 图形界面
+  bullet-trade gui
+
   更多信息请访问: https://github.com/BulletTrade/bullet-trade
                https://bullettrade.cn/
         """
@@ -485,6 +488,13 @@ def create_parser():
     lab_parser.add_argument('--keyfile', dest='keyfile', default=None, help='TLS 私钥路径')
     lab_parser.add_argument('--allow-origin', dest='allow_origin', default=None, help='允许的跨域来源')
     lab_parser.add_argument('--diagnose', dest='diagnose', action='store_true', help='仅做依赖/端口诊断，不启动服务')
+    
+    # gui 命令
+    gui_parser = subparsers.add_parser(
+        'gui',
+        help='启动图形化用户界面'
+    )
+    
     return parser
 
 
@@ -525,6 +535,14 @@ def main():
         from bullet_trade.cli.jupyterlab import run_lab
 
         return run_lab(args)
+    elif args.command == 'gui':
+        try:
+            from bullet_trade.gui.app import main as gui_main
+            return gui_main()
+        except ImportError as e:
+            print(f"❌ GUI依赖未安装: {e}")
+            print("请运行: pip install bullet-trade[gui]")
+            return 1
     else:
         print(f"未知命令: {args.command}")
         return 1

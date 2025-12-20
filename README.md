@@ -18,6 +18,7 @@
 - **📊 多数据源**：JQData、MiniQMT、TuShare、本地缓存与远程 QMT server 均可切换。
 - **⚡ 回测 & 报告**：分钟/日线回测、真实价格撮合、HTML/PDF 报告一键生成。
 - **💼 实盘接入**：本地 QMT、远程 QMT server、模拟券商按需选择。
+- **🖥️ 图形界面**：基于 PyQt6 的现代化 GUI，支持策略管理、回测、实盘、优化等功能。
 - **🧩 可扩展**：数据/券商接口基于抽象基类，便于自定义实现。
 
 
@@ -25,6 +26,7 @@
 
 - [文档首页](docs/index.md):  站点 <https://bullettrade.cn/docs/>
 - [快速上手](docs/quickstart.md)：三步跑通回测/实盘，聚宽策略无改直接复用。
+- [GUI使用指南](README_GUI.md)：图形界面使用说明。
 - [配置总览](docs/config.md)：回测/本地实盘/远程实盘/聚宽接入的环境变量一览。
 - [回测引擎](docs/backtest.md)：真实价格成交、分红送股处理、聚宽代码示例与 CLI 回测。
 - [实盘引擎](docs/live.md)：本地 QMT 独立实盘与远程实盘流程。
