@@ -19,8 +19,10 @@ except Exception as exc:  # pragma: no cover - 兼容运行环境缺少 GUI 依�
     plt = None  # type: ignore
 
 # 加载环境变量
-from .utils.env_loader import load_env
+from .utils.env_loader import load_env, clean_env_comments
 load_env()
+# 再次清理环境变量（确保在导入数据模块之前清理）
+clean_env_comments()
 
 # 配置中文字体显示
 # from .utils.font_config import setup_chinese_fonts

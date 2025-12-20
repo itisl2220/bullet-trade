@@ -115,26 +115,26 @@ class LiveConfig:
         if overrides:
             raw.update(overrides)
         return cls(
-            order_max_volume=int(raw.get('order_max_volume', 1_000_000)),
-            trade_max_wait_time=int(raw.get('trade_max_wait_time', 16)),
-            event_time_out=int(raw.get('event_time_out', 60)),
-            scheduler_market_periods=raw.get('scheduler_market_periods'),
-            account_sync_interval=int(raw.get('account_sync_interval', 60)),
-            account_sync_enabled=bool(raw.get('account_sync_enabled', True)),
-            order_sync_interval=int(raw.get('order_sync_interval', 10)),
-            order_sync_enabled=bool(raw.get('order_sync_enabled', True)),
-            g_autosave_interval=int(raw.get('g_autosave_interval', 60)),
-            g_autosave_enabled=bool(raw.get('g_autosave_enabled', True)),
-            tick_subscription_limit=int(raw.get('tick_subscription_limit', 100)),
-            tick_sync_interval=int(raw.get('tick_sync_interval', 2)),
-            tick_sync_enabled=bool(raw.get('tick_sync_enabled', True)),
-            risk_check_interval=int(raw.get('risk_check_interval', 300)),
-            risk_check_enabled=bool(raw.get('risk_check_enabled', True)),
-            broker_heartbeat_interval=int(raw.get('broker_heartbeat_interval', 30)),
-            runtime_dir=str(raw.get('runtime_dir', './runtime')),
-            buy_price_percent=float(raw.get('market_buy_price_percent', 0.015)),
-            sell_price_percent=float(raw.get('market_sell_price_percent', -0.015)),
-            portfolio_refresh_throttle_ms=int(raw.get('portfolio_refresh_throttle_ms', 200)),
+            order_max_volume=int(raw.get("order_max_volume", 1_000_000)),
+            trade_max_wait_time=int(raw.get("trade_max_wait_time", 16)),
+            event_time_out=int(raw.get("event_time_out", 60)),
+            scheduler_market_periods=raw.get("scheduler_market_periods"),
+            account_sync_interval=int(raw.get("account_sync_interval", 60)),
+            account_sync_enabled=bool(raw.get("account_sync_enabled", True)),
+            order_sync_interval=int(raw.get("order_sync_interval", 10)),
+            order_sync_enabled=bool(raw.get("order_sync_enabled", True)),
+            g_autosave_interval=int(raw.get("g_autosave_interval", 60)),
+            g_autosave_enabled=bool(raw.get("g_autosave_enabled", True)),
+            tick_subscription_limit=int(raw.get("tick_subscription_limit", 100)),
+            tick_sync_interval=int(raw.get("tick_sync_interval", 2)),
+            tick_sync_enabled=bool(raw.get("tick_sync_enabled", True)),
+            risk_check_interval=int(raw.get("risk_check_interval", 300)),
+            risk_check_enabled=bool(raw.get("risk_check_enabled", True)),
+            broker_heartbeat_interval=int(raw.get("broker_heartbeat_interval", 30)),
+            runtime_dir=str(raw.get("runtime_dir", "./runtime")),
+            buy_price_percent=float(raw.get("market_buy_price_percent", 0.015)),
+            sell_price_percent=float(raw.get("market_sell_price_percent", -0.015)),
+            portfolio_refresh_throttle_ms=int(raw.get("portfolio_refresh_throttle_ms", 200)),
         )
 
 
@@ -258,6 +258,7 @@ class LiveEngine:
 
         await self._bootstrap()
 
+        log.info("🚀 Live 引擎启动完成，开始运行循环")
         await self.event_bus.emit(SystemStartEvent())
         try:
             await self._run_loop()
@@ -282,10 +283,10 @@ class LiveEngine:
         self.after_trading_end_func = self._strategy_loader.after_trading_end_func
         module = sys.modules.get("strategy")
         if module:
-            self.handle_tick_func = getattr(module, 'handle_tick', None)
+            self.handle_tick_func = getattr(module, "handle_tick", None)
             if self.process_initialize_func is None:
-                self.process_initialize_func = getattr(module, 'process_initialize', None)
-            self.after_code_changed_func = getattr(module, 'after_code_changed', None)
+                self.process_initialize_func = getattr(module, "process_initialize", None)
+            self.after_code_changed_func = getattr(module, "after_code_changed", None)
         else:
             self.handle_tick_func = None
             self.after_code_changed_func = None
@@ -298,8 +299,8 @@ class LiveEngine:
         reset_settings()
         set_current_engine(self)
         set_current_context(self.context)
-        self.context.run_params['run_type'] = 'LIVE'
-        self.context.run_params['is_live'] = True
+        self.context.run_params["run_type"] = "LIVE"
+        self.context.run_params["is_live"] = True
 
         current_hash = self._compute_strategy_hash()
         restored_runtime = runtime_restored()
@@ -321,11 +322,15 @@ class LiveEngine:
 
         self._apply_market_period_override()
 
-        hash_changed = bool(metadata) and metadata.get('strategy_hash') and metadata.get('strategy_hash') != current_hash
+        hash_changed = (
+            bool(metadata)
+            and metadata.get("strategy_hash")
+            and metadata.get("strategy_hash") != current_hash
+        )
         if metadata:
             log.debug(
                 "LiveEngine: metadata_hash=%s, current_hash=%s, restored=%s",
-                metadata.get('strategy_hash'),
+                metadata.get("strategy_hash"),
                 current_hash,
                 hash_changed,
             )
@@ -341,7 +346,9 @@ class LiveEngine:
         # 若策略已通过 run_daily/run_weekly 注册了相同函数，则避免 LiveEngine 再直接调用，防止重复触发
         try:
             tasks = get_tasks()
-            if self.before_trading_start_func and any(t.func is self.before_trading_start_func for t in tasks):
+            if self.before_trading_start_func and any(
+                t.func is self.before_trading_start_func for t in tasks
+            ):
                 log.debug("LiveEngine: before_market_open 已通过调度注册，跳过直接调用钩子")
                 self.before_trading_start_func = None
             if self.handle_data_func and any(t.func is self.handle_data_func for t in tasks):
@@ -356,8 +363,8 @@ class LiveEngine:
         symbols, markets = load_subscription_state()
         self._tick_symbols = set(symbols)
         self._tick_markets = set(markets)
-        should_sync_initial = (
-            not self._tick_subscription_updated and (self._tick_symbols or self._tick_markets)
+        should_sync_initial = not self._tick_subscription_updated and (
+            self._tick_symbols or self._tick_markets
         )
         if should_sync_initial:
             self._sync_provider_subscription(initial=True)
@@ -366,9 +373,7 @@ class LiveEngine:
         if self._last_schedule_dt:
             current_minute = self._now().replace(second=0, microsecond=0)
             if self._last_schedule_dt > current_minute:
-                log.warning(
-                    "检测到历史调度游标晚于当前系统时间，已忽略此前的游标值。"
-                )
+                log.warning("检测到历史调度游标晚于当前系统时间，已忽略此前的游标值。")
                 self._last_schedule_dt = None
 
         self._start_background_jobs()
@@ -403,13 +408,27 @@ class LiveEngine:
 
     async def _run_loop(self) -> None:
         assert self._loop is not None
+        log.info("🔄 进入主循环")
         while not self._stop_event.is_set():
-            now = self._now()
-            if not await self._calendar_guard.ensure_trade_day(now):
-                continue
-            await self._ensure_trading_day(now.date())
-            await self._handle_minute_tick(now)
-            await self._sleep_until_next_minute(now)
+            try:
+                now = self._now()
+                log.debug(f"检查交易日: {now.date()}")
+                is_trade_day = await self._calendar_guard.ensure_trade_day(now)
+                log.debug(f"交易日检查结果: {is_trade_day}")
+                if not is_trade_day:
+                    log.info("等待交易日，60秒后重新检查")
+                    await asyncio.sleep(60)  # 非交易日时等待 60 秒再检查
+                    continue
+                log.debug(f"确认是交易日，继续处理: {now.date()}")
+                await self._ensure_trading_day(now.date())
+                log.debug("交易日初始化完成")
+                await self._handle_minute_tick(now)
+                log.debug("分钟tick处理完成")
+                await self._sleep_until_next_minute(now)
+                log.debug("等待下一分钟")
+            except Exception as e:
+                log.error(f"主循环异常: {e}", exc_info=True)
+                await asyncio.sleep(1)  # 发生异常时等待1秒再继续
 
     async def _sleep_until_next_minute(self, now: datetime) -> None:
         target = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
@@ -448,9 +467,7 @@ class LiveEngine:
     async def _handle_minute_tick(self, wall_clock: datetime) -> None:
         current_minute = wall_clock.replace(second=0, microsecond=0)
         if self._last_schedule_dt and self._last_schedule_dt > current_minute:
-            log.warning(
-                "检测到历史调度游标超前当前时间，将重置为当前分钟之前。"
-            )
+            log.warning("检测到历史调度游标超前当前时间，将重置为当前分钟之前。")
             self._last_schedule_dt = current_minute - timedelta(minutes=1)
         scheduled = current_minute
         if self._last_schedule_dt and scheduled <= self._last_schedule_dt:
@@ -471,9 +488,7 @@ class LiveEngine:
         log.set_strategy_time(scheduled)
 
         if delay > timeout:
-            log.warning(
-                f"⏱️ 事件超时丢弃: scheduled={scheduled}, delay={delay:.1f}s (> {timeout}s)"
-            )
+            log.warning(f"⏱️ 事件超时丢弃: scheduled={scheduled}, delay={delay:.1f}s (> {timeout}s)")
             self._last_schedule_dt = scheduled
             persist_scheduler_cursor(scheduled)
             return
@@ -513,27 +528,29 @@ class LiveEngine:
 
     async def _maybe_emit_market_events(self, dt: datetime) -> None:
         assert self.event_bus is not None
-        if self._pre_open_dt and 'pre_open' not in self._markers_fired and dt >= self._pre_open_dt:
-            self._markers_fired.add('pre_open')
+        if self._pre_open_dt and "pre_open" not in self._markers_fired and dt >= self._pre_open_dt:
+            self._markers_fired.add("pre_open")
             await self.event_bus.emit(BeforeTradingStartEvent(date=dt.date()))
             await self._call_hook(self.before_trading_start_func)
 
-        if self._open_dt and 'open' not in self._markers_fired and dt >= self._open_dt:
-            self._markers_fired.add('open')
+        if self._open_dt and "open" not in self._markers_fired and dt >= self._open_dt:
+            self._markers_fired.add("open")
             await self.event_bus.emit(MarketOpenEvent(time=dt.strftime("%H:%M:%S")))
 
         if self._is_trading_minute(dt):
             await self.event_bus.emit(EveryMinuteEvent(time=dt.strftime("%H:%M:%S")))
 
-        if self._close_dt and 'close' not in self._markers_fired and dt >= self._close_dt:
-            self._markers_fired.add('close')
+        if self._close_dt and "close" not in self._markers_fired and dt >= self._close_dt:
+            self._markers_fired.add("close")
             await self.event_bus.emit(MarketCloseEvent(time=dt.strftime("%H:%M:%S")))
             await self._call_hook(self.after_trading_end_func)
             await self.event_bus.emit(AfterTradingEndEvent(date=dt.date()))
-            await self.event_bus.emit(TradingDayEndEvent(
-                date=dt.date(),
-                portfolio_value=self.context.portfolio.total_value,
-            ))
+            await self.event_bus.emit(
+                TradingDayEndEvent(
+                    date=dt.date(),
+                    portfolio_value=self.context.portfolio.total_value,
+                )
+            )
 
     async def _maybe_handle_data(self, dt: datetime) -> None:
         if not self.handle_data_func:
@@ -581,11 +598,13 @@ class LiveEngine:
                     if order_value <= 0:
                         log.warning(f"订单 {plan.security} 价值异常，忽略执行")
                         continue
-                    action = 'buy' if plan.is_buy else 'sell'
+                    action = "buy" if plan.is_buy else "sell"
                     risk = self._risk
                     if risk:
                         positions_count = len(open_position_symbols | pending_new_positions)
-                        total_value = float(getattr(self.context.portfolio, "total_value", 0.0) or 0.0)
+                        total_value = float(
+                            getattr(self.context.portfolio, "total_value", 0.0) or 0.0
+                        )
                         try:
                             risk.check_order(
                                 order_value=order_value,
@@ -612,11 +631,19 @@ class LiveEngine:
                     order_id: Optional[str] = None
                     if plan.is_buy:
                         order_id = await self.broker.buy(
-                            plan.security, plan.amount, price_arg, wait_timeout=plan.wait_timeout, market=market_flag
+                            plan.security,
+                            plan.amount,
+                            price_arg,
+                            wait_timeout=plan.wait_timeout,
+                            market=market_flag,
                         )
                     else:
                         order_id = await self.broker.sell(
-                            plan.security, plan.amount, price_arg, wait_timeout=plan.wait_timeout, market=market_flag
+                            plan.security,
+                            plan.amount,
+                            price_arg,
+                            wait_timeout=plan.wait_timeout,
+                            market=market_flag,
                         )
                     try:
                         setattr(order, "_broker_order_id", order_id)
@@ -779,33 +806,33 @@ class LiveEngine:
             return self._broker_factory()
 
         cfg = get_broker_config()
-        name = (self.broker_name or cfg.get('default') or 'simulator').lower()
+        name = (self.broker_name or cfg.get("default") or "simulator").lower()
 
-        if name == 'qmt':
-            qcfg = cfg.get('qmt') or {}
-            account_id = qcfg.get('account_id')
+        if name == "qmt":
+            qcfg = cfg.get("qmt") or {}
+            account_id = qcfg.get("account_id")
             if not account_id:
                 raise RuntimeError("缺少 QMT_ACCOUNT_ID，请在 .env.live 中配置")
             return QmtBroker(
                 account_id=account_id,
-                account_type=qcfg.get('account_type', 'stock'),
-                data_path=qcfg.get('data_path'),
-                session_id=qcfg.get('session_id'),
-                auto_subscribe=qcfg.get('auto_subscribe'),
+                account_type=qcfg.get("account_type", "stock"),
+                data_path=qcfg.get("data_path"),
+                session_id=qcfg.get("session_id"),
+                auto_subscribe=qcfg.get("auto_subscribe"),
             )
-        if name == 'qmt-remote':
-            rcfg = cfg.get('qmt-remote') or {}
+        if name == "qmt-remote":
+            rcfg = cfg.get("qmt-remote") or {}
             return RemoteQmtBroker(
-                account_id=rcfg.get('account_id') or rcfg.get('account_key') or 'remote',
-                account_type=rcfg.get('account_type', 'stock'),
+                account_id=rcfg.get("account_id") or rcfg.get("account_key") or "remote",
+                account_type=rcfg.get("account_type", "stock"),
                 config=rcfg,
             )
-        if name == 'simulator':
-            scfg = cfg.get('simulator') or {}
+        if name == "simulator":
+            scfg = cfg.get("simulator") or {}
             return SimulatorBroker(
-                account_id=scfg.get('account_id', 'simulator'),
-                account_type=scfg.get('account_type', 'stock'),
-                initial_cash=scfg.get('initial_cash', 1_000_000),
+                account_id=scfg.get("account_id", "simulator"),
+                account_type=scfg.get("account_type", "stock"),
+                initial_cash=scfg.get("initial_cash", 1_000_000),
             )
         raise ValueError(f"未知券商类型: {name}")
 
@@ -839,7 +866,9 @@ class LiveEngine:
         for mk in markets:
             self._tick_markets.discard(mk)
         persist_subscription_state(self._tick_symbols, self._tick_markets)
-        self._sync_provider_subscription(unsubscribe=True, symbols=list(symbols), markets=list(markets))
+        self._sync_provider_subscription(
+            unsubscribe=True, symbols=list(symbols), markets=list(markets)
+        )
 
     def unsubscribe_all_ticks(self) -> None:
         self._tick_subscription_updated = True
@@ -918,6 +947,7 @@ class LiveEngine:
             asyncio.run_coroutine_threadsafe(self._call_hook(self.handle_tick_func, data), self._loop)  # type: ignore[arg-type]
         except Exception:
             pass
+
     async def _tick_loop(self) -> None:
         if not self.config.tick_sync_enabled:
             return
@@ -935,7 +965,9 @@ class LiveEngine:
             if self._tick_symbols:
                 for sym in list(self._tick_symbols):
                     try:
-                        tick = await self._loop.run_in_executor(None, self._fetch_tick_snapshot, sym)
+                        tick = await self._loop.run_in_executor(
+                            None, self._fetch_tick_snapshot, sym
+                        )
                     except Exception:
                         tick = None
                     if tick:
@@ -953,41 +985,51 @@ class LiveEngine:
     def _start_background_jobs(self) -> None:
         assert self._loop is not None
         if self.config.account_sync_enabled and self.broker and self.broker.supports_account_sync():
-            self._background_tasks.append(self._loop.create_task(
-                self._periodic_task(
-                    "account-sync",
-                    self.config.account_sync_interval,
-                    self._account_sync_step,
+            self._background_tasks.append(
+                self._loop.create_task(
+                    self._periodic_task(
+                        "account-sync",
+                        self.config.account_sync_interval,
+                        self._account_sync_step,
+                    )
                 )
-            ))
+            )
         if self.config.order_sync_enabled and self.broker and self.broker.supports_orders_sync():
-            self._background_tasks.append(self._loop.create_task(
-                self._periodic_task(
-                    "order-sync",
-                    self.config.order_sync_interval,
-                    self._order_sync_step,
+            self._background_tasks.append(
+                self._loop.create_task(
+                    self._periodic_task(
+                        "order-sync",
+                        self.config.order_sync_interval,
+                        self._order_sync_step,
+                    )
                 )
-            ))
+            )
         if self.config.risk_check_enabled:
-            self._background_tasks.append(self._loop.create_task(
-                self._periodic_task(
-                    "risk",
-                    self.config.risk_check_interval,
-                    self._risk_step,
+            self._background_tasks.append(
+                self._loop.create_task(
+                    self._periodic_task(
+                        "risk",
+                        self.config.risk_check_interval,
+                        self._risk_step,
+                    )
                 )
-            ))
+            )
         if self.config.broker_heartbeat_interval > 0 and self.broker:
-            self._background_tasks.append(self._loop.create_task(
-                self._periodic_task(
-                    "heartbeat",
-                    self.config.broker_heartbeat_interval,
-                    self._heartbeat_step,
+            self._background_tasks.append(
+                self._loop.create_task(
+                    self._periodic_task(
+                        "heartbeat",
+                        self.config.broker_heartbeat_interval,
+                        self._heartbeat_step,
+                    )
                 )
-            ))
+            )
         # Tick 轮询
         self._background_tasks.append(self._loop.create_task(self._tick_loop()))
 
-    async def _periodic_task(self, name: str, interval: int, coro_func: Callable[[], Awaitable[None]]) -> None:
+    async def _periodic_task(
+        self, name: str, interval: int, coro_func: Callable[[], Awaitable[None]]
+    ) -> None:
         if interval <= 0:
             return
         assert self._loop is not None and self._stop_event is not None
@@ -1049,14 +1091,14 @@ class LiveEngine:
         self.broker = self._create_broker()
         self.broker.connect()
         summary = self._safe_account_info()
-        positions = summary.get('positions') or []
+        positions = summary.get("positions") or []
         log.info(
             "✅ 券商 %s 连接成功: account_id=%s, type=%s, 可用资金=%s, 总资产=%s, 持仓数=%s",
             self.broker.__class__.__name__,
-            summary.get('account_id') or getattr(self.broker, 'account_id', ''),
-            summary.get('account_type') or getattr(self.broker, 'account_type', ''),
-            summary.get('available_cash'),
-            summary.get('total_value'),
+            summary.get("account_id") or getattr(self.broker, "account_id", ""),
+            summary.get("account_type") or getattr(self.broker, "account_type", ""),
+            summary.get("available_cash"),
+            summary.get("total_value"),
             len(positions),
         )
         self._log_account_positions(summary)
@@ -1073,10 +1115,10 @@ class LiveEngine:
         monthday: Any,
     ) -> Tuple[Any, ...]:
         return (
-            module or '',
-            func_name or '',
-            schedule_type or '',
-            str(time_expr) if time_expr is not None else '',
+            module or "",
+            func_name or "",
+            schedule_type or "",
+            str(time_expr) if time_expr is not None else "",
             None if weekday is None else int(weekday),
             None if monthday is None else int(monthday),
         )
@@ -1088,8 +1130,8 @@ class LiveEngine:
         seen = set()
         unique: List[Any] = []
         for task in tasks:
-            module = getattr(task.func, '__module__', None)
-            name = getattr(task.func, '__name__', None)
+            module = getattr(task.func, "__module__", None)
+            name = getattr(task.func, "__name__", None)
             key = self._task_meta_key(
                 module,
                 name,
@@ -1122,7 +1164,8 @@ class LiveEngine:
         positional = [
             p
             for p in params
-            if p.kind in (
+            if p.kind
+            in (
                 inspect.Parameter.POSITIONAL_ONLY,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
             )
@@ -1152,11 +1195,11 @@ class LiveEngine:
             return
         for task in tasks:
             strategy = OverlapStrategy.SKIP
-            if task.schedule_type.value == 'daily':
+            if task.schedule_type.value == "daily":
                 self.async_scheduler.run_daily(task.func, task.time, strategy)
-            elif task.schedule_type.value == 'weekly':
+            elif task.schedule_type.value == "weekly":
                 self.async_scheduler.run_weekly(task.func, task.weekday, task.time, strategy)
-            elif task.schedule_type.value == 'monthly':
+            elif task.schedule_type.value == "monthly":
                 self.async_scheduler.run_monthly(task.func, task.monthday, task.time, strategy)
 
     def _snapshot_strategy_metadata(self, strategy_hash: Optional[str]) -> None:
@@ -1177,7 +1220,7 @@ class LiveEngine:
             return
         try:
             periods = parse_market_periods_string(expr)
-            set_option('market_period', [(start, end) for start, end in periods])
+            set_option("market_period", [(start, end) for start, end in periods])
             log.info("⚙️  已应用自定义交易时段: %s", expr)
         except Exception as exc:
             log.warning("环境变量 SCHEDULER_MARKET_PERIODS 解析失败(%s): %s", expr, exc)
@@ -1185,66 +1228,66 @@ class LiveEngine:
     def _collect_settings_snapshot(self) -> Dict[str, Any]:
         snapshot: Dict[str, Any] = {}
         settings = get_settings()
-        snapshot['benchmark'] = settings.benchmark
+        snapshot["benchmark"] = settings.benchmark
         options = dict(settings.options or {})
-        if isinstance(options.get('market_period'), (list, tuple)):
-            options['market_period'] = self._serialize_market_periods(options['market_period'])
-        snapshot['options'] = options
+        if isinstance(options.get("market_period"), (list, tuple)):
+            options["market_period"] = self._serialize_market_periods(options["market_period"])
+        snapshot["options"] = options
         order_cost_snapshot: Dict[str, Dict[str, Any]] = {}
         order_cost_override_snapshot: Dict[str, Dict[str, Any]] = {}
         for asset, cost in (settings.order_cost or {}).items():
             order_cost_snapshot[str(asset)] = {
-                'open_tax': cost.open_tax,
-                'close_tax': cost.close_tax,
-                'open_commission': cost.open_commission,
-                'close_commission': cost.close_commission,
-                'min_commission': cost.min_commission,
-                'close_today_commission': cost.close_today_commission,
-                'commission_type': getattr(cost, 'commission_type', 'by_money'),
+                "open_tax": cost.open_tax,
+                "close_tax": cost.close_tax,
+                "open_commission": cost.open_commission,
+                "close_commission": cost.close_commission,
+                "min_commission": cost.min_commission,
+                "close_today_commission": cost.close_today_commission,
+                "commission_type": getattr(cost, "commission_type", "by_money"),
             }
-        snapshot['order_cost'] = order_cost_snapshot
-        for asset, cost in (getattr(settings, 'order_cost_overrides', {}) or {}).items():
+        snapshot["order_cost"] = order_cost_snapshot
+        for asset, cost in (getattr(settings, "order_cost_overrides", {}) or {}).items():
             order_cost_override_snapshot[str(asset)] = {
-                'open_tax': cost.open_tax,
-                'close_tax': cost.close_tax,
-                'open_commission': cost.open_commission,
-                'close_commission': cost.close_commission,
-                'min_commission': cost.min_commission,
-                'close_today_commission': cost.close_today_commission,
-                'commission_type': getattr(cost, 'commission_type', 'by_money'),
+                "open_tax": cost.open_tax,
+                "close_tax": cost.close_tax,
+                "open_commission": cost.open_commission,
+                "close_commission": cost.close_commission,
+                "min_commission": cost.min_commission,
+                "close_today_commission": cost.close_today_commission,
+                "commission_type": getattr(cost, "commission_type", "by_money"),
             }
         if order_cost_override_snapshot:
-            snapshot['order_cost_overrides'] = order_cost_override_snapshot
+            snapshot["order_cost_overrides"] = order_cost_override_snapshot
         if settings.slippage:
-            payload = {'class': settings.slippage.__class__.__name__}
-            if hasattr(settings.slippage, 'value'):
-                payload['value'] = getattr(settings.slippage, 'value', None)
-            if hasattr(settings.slippage, 'ratio'):
-                payload['ratio'] = getattr(settings.slippage, 'ratio', None)
-            if hasattr(settings.slippage, 'steps'):
-                payload['steps'] = getattr(settings.slippage, 'steps', None)
-            snapshot['slippage'] = payload
-        sl_map = getattr(settings, 'slippage_map', {}) or {}
+            payload = {"class": settings.slippage.__class__.__name__}
+            if hasattr(settings.slippage, "value"):
+                payload["value"] = getattr(settings.slippage, "value", None)
+            if hasattr(settings.slippage, "ratio"):
+                payload["ratio"] = getattr(settings.slippage, "ratio", None)
+            if hasattr(settings.slippage, "steps"):
+                payload["steps"] = getattr(settings.slippage, "steps", None)
+            snapshot["slippage"] = payload
+        sl_map = getattr(settings, "slippage_map", {}) or {}
         sl_map_snapshot: Dict[str, Any] = {}
         for key, cfg in sl_map.items():
             payload = self._serialize_slippage_config(cfg)
             if payload is not None:
                 sl_map_snapshot[key] = payload
         if sl_map_snapshot:
-            snapshot['slippage_map'] = sl_map_snapshot
+            snapshot["slippage_map"] = sl_map_snapshot
         return snapshot
 
     @staticmethod
     def _serialize_slippage_config(config: Any) -> Optional[Dict[str, Any]]:
         if isinstance(config, PriceRelatedSlippage):
-            return {'class': 'PriceRelatedSlippage', 'ratio': float(config.ratio)}
+            return {"class": "PriceRelatedSlippage", "ratio": float(config.ratio)}
         if isinstance(config, StepRelatedSlippage):
-            return {'class': 'StepRelatedSlippage', 'steps': int(config.steps)}
+            return {"class": "StepRelatedSlippage", "steps": int(config.steps)}
         if isinstance(config, FixedSlippage):
-            return {'class': 'FixedSlippage', 'value': float(config.value)}
-        if hasattr(config, 'to_dict'):
+            return {"class": "FixedSlippage", "value": float(config.value)}
+        if hasattr(config, "to_dict"):
             try:
-                return {'class': config.__class__.__name__, **config.to_dict()}
+                return {"class": config.__class__.__name__, **config.to_dict()}
             except Exception:
                 return None
         return None
@@ -1253,14 +1296,14 @@ class LiveEngine:
     def _deserialize_slippage_config(payload: Dict[str, Any]) -> Optional[Any]:
         if not isinstance(payload, dict):
             return None
-        cls = payload.get('class')
+        cls = payload.get("class")
         try:
-            if cls == 'PriceRelatedSlippage':
-                return PriceRelatedSlippage(payload.get('ratio', 0.0))
-            if cls == 'StepRelatedSlippage':
-                return StepRelatedSlippage(payload.get('steps', 0))
-            if cls == 'FixedSlippage':
-                return FixedSlippage(payload.get('value', 0.0))
+            if cls == "PriceRelatedSlippage":
+                return PriceRelatedSlippage(payload.get("ratio", 0.0))
+            if cls == "StepRelatedSlippage":
+                return StepRelatedSlippage(payload.get("steps", 0))
+            if cls == "FixedSlippage":
+                return FixedSlippage(payload.get("value", 0.0))
         except Exception:
             return None
         return None
@@ -1270,8 +1313,8 @@ class LiveEngine:
         seen = set()
         for task in get_tasks():
             func = task.func
-            module = getattr(func, '__module__', None)
-            name = getattr(func, '__name__', None)
+            module = getattr(func, "__module__", None)
+            name = getattr(func, "__name__", None)
             if not module or not name:
                 continue
             key = self._task_meta_key(
@@ -1287,23 +1330,23 @@ class LiveEngine:
             seen.add(key)
             tasks_meta.append(
                 {
-                    'module': module,
-                    'func': name,
-                    'schedule_type': task.schedule_type.value,
-                    'time': task.time,
-                    'weekday': task.weekday,
-                    'monthday': task.monthday,
-                    'enabled': getattr(task, 'enabled', True),
+                    "module": module,
+                    "func": name,
+                    "schedule_type": task.schedule_type.value,
+                    "time": task.time,
+                    "weekday": task.weekday,
+                    "monthday": task.monthday,
+                    "enabled": getattr(task, "enabled", True),
                 }
             )
         return tasks_meta
 
     def _restore_strategy_metadata(self, meta: Dict[str, Any]) -> bool:
-        if not meta or meta.get('version') != 1:
+        if not meta or meta.get("version") != 1:
             return False
         try:
-            self._apply_settings_snapshot(meta.get('settings') or {})
-            self._apply_scheduler_tasks_snapshot(meta.get('tasks') or [])
+            self._apply_settings_snapshot(meta.get("settings") or {})
+            self._apply_scheduler_tasks_snapshot(meta.get("tasks") or [])
             return True
         except Exception as exc:
             log.warning(f"恢复策略元数据失败: {exc}")
@@ -1312,38 +1355,38 @@ class LiveEngine:
     def _apply_settings_snapshot(self, snapshot: Dict[str, Any]) -> None:
         if not snapshot:
             return
-        benchmark = snapshot.get('benchmark')
+        benchmark = snapshot.get("benchmark")
         if benchmark:
             try:
                 set_benchmark(benchmark)
             except Exception as exc:
                 log.warning(f"恢复 benchmark 失败: {exc}")
-        options = snapshot.get('options') or {}
+        options = snapshot.get("options") or {}
         for key, value in options.items():
             try:
-                if key == 'market_period' and value:
+                if key == "market_period" and value:
                     value = self._deserialize_market_periods(value)
                 set_option(key, value)
             except Exception as exc:
                 log.debug(f"恢复 option {key} 失败: {exc}")
-        order_costs = snapshot.get('order_cost') or {}
+        order_costs = snapshot.get("order_cost") or {}
         for asset, payload in order_costs.items():
             try:
                 cost = OrderCost(**payload)
                 set_order_cost(cost, type=asset)
             except Exception as exc:
                 log.debug(f"恢复 order_cost({asset}) 失败: {exc}")
-        order_cost_overrides = snapshot.get('order_cost_overrides') or {}
+        order_cost_overrides = snapshot.get("order_cost_overrides") or {}
         for asset, payload in order_cost_overrides.items():
             try:
                 cost = OrderCost(**payload)
                 # asset 形如 type_code
-                if '_' in asset:
-                    type_prefix, ref_code = asset.split('_', 1)
+                if "_" in asset:
+                    type_prefix, ref_code = asset.split("_", 1)
                     set_order_cost(cost, type=type_prefix, ref=ref_code)
             except Exception as exc:
                 log.debug(f"恢复 order_cost_overrides({asset}) 失败: {exc}")
-        sl_map = snapshot.get('slippage_map') or {}
+        sl_map = snapshot.get("slippage_map") or {}
         if sl_map:
             try:
                 settings = get_settings()
@@ -1352,20 +1395,20 @@ class LiveEngine:
                     cfg = self._deserialize_slippage_config(payload)
                     if cfg:
                         settings.slippage_map[key] = cfg
-                if settings.slippage is None and 'all' in settings.slippage_map:
-                    settings.slippage = settings.slippage_map.get('all')
+                if settings.slippage is None and "all" in settings.slippage_map:
+                    settings.slippage = settings.slippage_map.get("all")
             except Exception as exc:
                 log.debug(f"恢复 slippage_map 失败: {exc}")
-        slippage = snapshot.get('slippage')
+        slippage = snapshot.get("slippage")
         if slippage:
-            cls = slippage.get('class')
+            cls = slippage.get("class")
             try:
-                if cls == 'FixedSlippage':
-                    set_slippage(FixedSlippage(slippage.get('value', 0.0)))
-                elif cls == 'PriceRelatedSlippage':
-                    set_slippage(PriceRelatedSlippage(slippage.get('ratio', 0.0)))
-                elif cls == 'StepRelatedSlippage':
-                    set_slippage(StepRelatedSlippage(slippage.get('steps', 0)))
+                if cls == "FixedSlippage":
+                    set_slippage(FixedSlippage(slippage.get("value", 0.0)))
+                elif cls == "PriceRelatedSlippage":
+                    set_slippage(PriceRelatedSlippage(slippage.get("ratio", 0.0)))
+                elif cls == "StepRelatedSlippage":
+                    set_slippage(StepRelatedSlippage(slippage.get("steps", 0)))
             except Exception as exc:
                 log.debug(f"恢复 slippage 失败: {exc}")
 
@@ -1380,12 +1423,12 @@ class LiveEngine:
         seen = set()
         for task_meta in tasks:
             key = self._task_meta_key(
-                task_meta.get('module'),
-                task_meta.get('func'),
-                task_meta.get('schedule_type'),
-                task_meta.get('time'),
-                task_meta.get('weekday'),
-                task_meta.get('monthday'),
+                task_meta.get("module"),
+                task_meta.get("func"),
+                task_meta.get("schedule_type"),
+                task_meta.get("time"),
+                task_meta.get("weekday"),
+                task_meta.get("monthday"),
             )
             if key in seen:
                 continue
@@ -1393,20 +1436,20 @@ class LiveEngine:
             normalized_tasks.append(task_meta)
 
         for task_meta in normalized_tasks:
-            func = self._resolve_callable(task_meta.get('module'), task_meta.get('func'))
+            func = self._resolve_callable(task_meta.get("module"), task_meta.get("func"))
             if not func:
                 log.warning(f"无法恢复调度任务: {task_meta}")
                 continue
-            schedule_type = task_meta.get('schedule_type')
-            time_expr = task_meta.get('time', 'every_bar')
-            enabled = bool(task_meta.get('enabled', True))
+            schedule_type = task_meta.get("schedule_type")
+            time_expr = task_meta.get("time", "every_bar")
+            enabled = bool(task_meta.get("enabled", True))
             try:
-                if schedule_type == 'daily':
+                if schedule_type == "daily":
                     run_daily(func, time_expr)
-                elif schedule_type == 'weekly':
-                    run_weekly(func, task_meta.get('weekday'), time_expr)
-                elif schedule_type == 'monthly':
-                    run_monthly(func, task_meta.get('monthday'), time_expr)
+                elif schedule_type == "weekly":
+                    run_weekly(func, task_meta.get("weekday"), time_expr)
+                elif schedule_type == "monthly":
+                    run_monthly(func, task_meta.get("monthday"), time_expr)
                 current_tasks = get_tasks()
                 if current_tasks:
                     current_task = current_tasks[-1]
@@ -1414,7 +1457,9 @@ class LiveEngine:
             except Exception as exc:
                 log.warning(f"恢复调度任务失败 {task_meta}: {exc}")
 
-    def _resolve_callable(self, module_name: Optional[str], func_name: Optional[str]) -> Optional[Callable]:
+    def _resolve_callable(
+        self, module_name: Optional[str], func_name: Optional[str]
+    ) -> Optional[Callable]:
         if not module_name or not func_name:
             return None
         module = sys.modules.get(module_name)
@@ -1456,7 +1501,11 @@ class LiveEngine:
         if not self.broker or not self.broker.supports_account_sync():
             return
         now = datetime.now()
-        if not force and self._last_account_refresh and (now - self._last_account_refresh).total_seconds() < 1:
+        if (
+            not force
+            and self._last_account_refresh
+            and (now - self._last_account_refresh).total_seconds() < 1
+        ):
             return
         try:
             snapshot = self.broker.sync_account()
@@ -1469,28 +1518,32 @@ class LiveEngine:
 
     def _apply_account_snapshot(self, snapshot: Dict[str, Any]) -> None:
         try:
-            target = self.portfolio_proxy.backing if isinstance(self.context.portfolio, LivePortfolioProxy) else self.context.portfolio
-            cash = snapshot.get('available_cash')
-            total = snapshot.get('total_value')
+            target = (
+                self.portfolio_proxy.backing
+                if isinstance(self.context.portfolio, LivePortfolioProxy)
+                else self.context.portfolio
+            )
+            cash = snapshot.get("available_cash")
+            total = snapshot.get("total_value")
             if cash is not None:
                 target.available_cash = float(cash)
             if total is not None:
                 target.total_value = float(total)
-            positions = snapshot.get('positions') or []
+            positions = snapshot.get("positions") or []
             target.positions.clear()
             for item in positions:
-                security = item.get('security')
+                security = item.get("security")
                 if not security:
                     continue
-                amount = int(item.get('amount', item.get('total_amount', 0)) or 0)
-                price = float(item.get('current_price', item.get('price', 0.0)) or 0.0)
+                amount = int(item.get("amount", item.get("total_amount", 0)) or 0)
+                price = float(item.get("current_price", item.get("price", 0.0)) or 0.0)
                 target.positions[security] = Position(
                     security=security,
                     total_amount=amount,
-                    closeable_amount=int(item.get('closeable_amount', amount)),
-                    avg_cost=float(item.get('avg_cost', 0.0) or 0.0),
+                    closeable_amount=int(item.get("closeable_amount", amount)),
+                    avg_cost=float(item.get("avg_cost", 0.0) or 0.0),
                     price=price,
-                    value=float(item.get('market_value', amount * price)),
+                    value=float(item.get("market_value", amount * price)),
                 )
             target.update_value()
         except Exception as exc:
@@ -1511,7 +1564,7 @@ class LiveEngine:
             info = self.broker.get_account_info() or {}
             # 如果券商返回的是自定义对象，尽量转成 dict
             if not isinstance(info, dict):
-                info = getattr(info, '__dict__', {}) or {}
+                info = getattr(info, "__dict__", {}) or {}
             return info
         except Exception as exc:
             log.debug(f"获取账户信息失败: {exc}")
@@ -1522,41 +1575,43 @@ class LiveEngine:
         以 print_portfolio_info 风格输出券商账户概览，避免原始 list 噪音。
         """
         try:
-            positions = list(summary.get('positions') or [])
-            total_value = self._to_float(summary.get('total_value'))
-            cash = self._to_float(summary.get('available_cash'))
+            positions = list(summary.get("positions") or [])
+            total_value = self._to_float(summary.get("total_value"))
+            cash = self._to_float(summary.get("available_cash"))
             invested = 0.0
             entries: List[Dict[str, Any]] = []
             for item in positions:
-                code = item.get('security') or item.get('code')
+                code = item.get("security") or item.get("code")
                 if not code:
                     continue
-                amount = int(item.get('amount', item.get('total_amount', 0)) or 0)
+                amount = int(item.get("amount", item.get("total_amount", 0)) or 0)
                 if amount <= 0:
                     continue
-                closeable = int(item.get('closeable_amount', amount) or amount)
-                avg_cost = self._to_float(item.get('avg_cost'))
-                price = self._to_float(item.get('current_price', item.get('price')))
-                value = self._to_float(item.get('market_value'), default=price * amount)
+                closeable = int(item.get("closeable_amount", amount) or amount)
+                avg_cost = self._to_float(item.get("avg_cost"))
+                price = self._to_float(item.get("current_price", item.get("price")))
+                value = self._to_float(item.get("market_value"), default=price * amount)
                 if value == 0.0:
                     value = price * amount
                 invested += value
                 pnl = value - avg_cost * amount
                 pnl_pct = ((price / avg_cost - 1.0) * 100.0) if avg_cost > 0 else 0.0
                 weight = ((value / total_value) * 100.0) if total_value > 0 else 0.0
-                name = item.get('display_name') or item.get('name') or self._lookup_security_name(code)
+                name = (
+                    item.get("display_name") or item.get("name") or self._lookup_security_name(code)
+                )
                 entries.append(
                     {
-                        'code': code,
-                        'name': name,
-                        'amount': amount,
-                        'closeable': closeable,
-                        'avg_cost': avg_cost,
-                        'price': price,
-                        'value': value,
-                        'pnl': pnl,
-                        'pnl_pct': pnl_pct,
-                        'weight': weight,
+                        "code": code,
+                        "name": name,
+                        "amount": amount,
+                        "closeable": closeable,
+                        "avg_cost": avg_cost,
+                        "price": price,
+                        "value": value,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "weight": weight,
                     }
                 )
 
@@ -1571,15 +1626,26 @@ class LiveEngine:
                 log.info("当前持仓：无")
                 return
 
-            entries.sort(key=lambda x: x['value'], reverse=True)
+            entries.sort(key=lambda x: x["value"], reverse=True)
             entries = entries[:limit]
-            headers = ["股票代码", "名称", "持仓", "可用", "成本价", "现价", "市值", "盈亏", "盈亏%", "占比%"]
+            headers = [
+                "股票代码",
+                "名称",
+                "持仓",
+                "可用",
+                "成本价",
+                "现价",
+                "市值",
+                "盈亏",
+                "盈亏%",
+                "占比%",
+            ]
             rows = [
                 [
-                    entry['code'],
-                    entry['name'],
-                    str(entry['amount']),
-                    str(entry['closeable']),
+                    entry["code"],
+                    entry["name"],
+                    str(entry["amount"]),
+                    str(entry["closeable"]),
                     f"{entry['avg_cost']:.3f}",
                     f"{entry['price']:.3f}",
                     f"{entry['value']:,.2f}",
@@ -1623,8 +1689,7 @@ class LiveEngine:
 
         def _format_row(values: Sequence[str]) -> str:
             segments = [
-                f" {cls._pad_cell(str(value), widths[idx])} "
-                for idx, value in enumerate(values)
+                f" {cls._pad_cell(str(value), widths[idx])} " for idx, value in enumerate(values)
             ]
             return "|" + "|".join(segments) + "|"
 
@@ -1660,6 +1725,8 @@ class LiveEngine:
         current = cls._display_width(text)
         padding = max(target_width - current, 0)
         return text + (" " * padding)
+
+
 class LivePortfolioProxy:
     """
     代理 Portfolio，确保访问现金/持仓时优先刷新券商快照。
@@ -1728,30 +1795,61 @@ class TradingCalendarGuard:
 
     async def ensure_trade_day(self, now: datetime) -> bool:
         today = now.date()
+        log.debug(
+            f"ensure_trade_day: 检查日期 {today}, 已确认日期: {self._confirmed_date}, 下次检查: {self._next_check}"
+        )
         if self._confirmed_date == today:
+            log.debug("ensure_trade_day: 日期已确认，返回 True")
             return True
         if self._next_check and now < self._next_check:
+            log.debug("ensure_trade_day: 未到检查时间，返回 False")
             return False
-        if await self._is_trading_day(today):
+        log.debug("ensure_trade_day: 开始检查是否为交易日")
+        is_trade = await self._is_trading_day(today)
+        log.debug(f"ensure_trade_day: 交易日检查结果: {is_trade}")
+        if is_trade:
             self._confirmed_date = today
+            log.debug("ensure_trade_day: 确认为交易日，返回 True")
             return True
         wait_minutes = max(5, int(self._config_value("calendar_retry_minutes", 20)))
         self._next_check = now + timedelta(minutes=wait_minutes)
-        log.debug("今日非交易日，下一次检查时间 %s", self._next_check.strftime("%Y-%m-%d %H:%M"))
+        log.info("今日非交易日，下一次检查时间 %s", self._next_check.strftime("%Y-%m-%d %H:%M"))
         return False
 
     async def _is_trading_day(self, target: date) -> bool:
+        log.debug(f"检查是否为交易日: {target}")
         try:
             from bullet_trade.data.api import get_trade_days
 
-            days = get_trade_days(str(target), str(target))
-            if hasattr(days, "empty"):
-                return not days.empty
-        except Exception:
-            pass
+            # 在异步执行器中运行同步的 get_trade_days，避免阻塞事件循环
+            # 设置超时防止长时间阻塞
+            try:
+                loop = asyncio.get_running_loop()
+                log.debug(f"开始获取交易日数据: {target}")
+                days = await asyncio.wait_for(
+                    loop.run_in_executor(None, get_trade_days, str(target), str(target)),
+                    timeout=5.0,  # 5秒超时
+                )
+                log.debug(f"获取交易日数据完成: {len(days) if days else 0} 天")
+                if hasattr(days, "empty"):
+                    result = not days.empty
+                    log.debug(f"交易日检查结果（DataFrame）: {result}")
+                    return result
+                if days:
+                    log.debug("交易日检查结果（列表）: True")
+                    return True
+                log.debug("交易日检查结果（空列表）: False")
+            except asyncio.TimeoutError:
+                log.warning(f"获取交易日超时，使用周末判断: {target}")
+            except Exception as e:
+                log.debug(f"获取交易日失败，使用周末判断: {e}")
+        except Exception as e:
+            log.debug(f"交易日检查异常: {e}")
         weekend_skip = bool(self._config_value("calendar_skip_weekend", True))
         if weekend_skip and target.weekday() >= 5:
+            log.debug(f"周末判断: {target} 是周末，非交易日")
             return False
+        log.debug(f"默认判断: {target} 视为交易日")
         return True
 
     def _config_value(self, name: str, default: Any) -> Any:

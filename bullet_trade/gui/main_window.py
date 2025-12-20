@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
 
 from .pages.backtest_page import BacktestPage
+from .pages.config_page import ConfigPage
 from .pages.live_page import LivePage
 from .pages.optimize_page import OptimizePage
 from .pages.report_page import ReportPage
@@ -109,6 +110,10 @@ class MainWindow(QMainWindow):
         # 报告页面
         self.report_page = ReportPage()
         self.tabs.addTab(self.report_page, "报告")
+        
+        # 配置页面
+        self.config_page = ConfigPage()
+        self.tabs.addTab(self.config_page, "配置")
     
     def _apply_styles(self):
         """应用样式"""

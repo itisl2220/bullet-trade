@@ -34,10 +34,12 @@ class CacheManager:
         else:
             self.cache_dir = ""
         self.enabled = bool(self.cache_dir)
-        self.expire_days = int(os.getenv("JQDATA_CACHE_EXPIRE_DAYS", "1") or 1)
-        self.default_df_format = os.getenv("JQDATA_CACHE_FORMAT", "parquet").lower()
+        from bullet_trade.utils.env_loader import get_env_int, get_env
+
+        self.expire_days = get_env_int("JQDATA_CACHE_EXPIRE_DAYS", 1)
+        self.default_df_format = get_env("JQDATA_CACHE_FORMAT", "parquet").lower()
         # 缓存版本：当数据结构/口径调整时可通过环境变量强制失效（默认'2'）
-        self.schema_version = os.getenv("JQDATA_CACHE_VERSION", "2")
+        self.schema_version = get_env("JQDATA_CACHE_VERSION", "2")
         if self.enabled:
             os.makedirs(self.cache_dir, exist_ok=True)
 
@@ -68,7 +70,9 @@ class CacheManager:
 
         # 未命中或过期 -> 拉取 + 写入
         result = fetch_fn(kwargs)
-        self._atomic_write(method_name, data_path, meta_path, result, result_type, norm_params, dynamic_ttl)
+        self._atomic_write(
+            method_name, data_path, meta_path, result, result_type, norm_params, dynamic_ttl
+        )
         return result
 
     # -------------------------- 归一化/键 --------------------------
@@ -97,9 +101,16 @@ class CacheManager:
             return dt.date().isoformat()
 
         if isinstance(value, datetime):
-            naive = value if value.tzinfo is None else value.astimezone(timezone.utc).replace(tzinfo=None)
+            naive = (
+                value
+                if value.tzinfo is None
+                else value.astimezone(timezone.utc).replace(tzinfo=None)
+            )
             has_time = not (
-                naive.hour == 0 and naive.minute == 0 and naive.second == 0 and naive.microsecond == 0
+                naive.hour == 0
+                and naive.minute == 0
+                and naive.second == 0
+                and naive.microsecond == 0
             )
             return naive.isoformat() if has_time else naive.date().isoformat()
 
@@ -192,7 +203,9 @@ class CacheManager:
         meta_path = os.path.join(base_dir, f"{key_hash}.meta.json")
         return data_path, meta_path
 
-    def _load_if_valid(self, data_path: str, meta_path: str, ttl_days: Optional[int]) -> Optional[Any]:
+    def _load_if_valid(
+        self, data_path: str, meta_path: str, ttl_days: Optional[int]
+    ) -> Optional[Any]:
         try:
             if not os.path.exists(meta_path):
                 return None
@@ -273,7 +286,9 @@ class CacheManager:
             # 写 meta
             expire_at = None
             if ttl_days is not None:
-                expire_at = (datetime.fromtimestamp(datetime.now().timestamp() + ttl_days * 24 * 3600).isoformat())
+                expire_at = datetime.fromtimestamp(
+                    datetime.now().timestamp() + ttl_days * 24 * 3600
+                ).isoformat()
             meta = {
                 "provider": self.provider_name,
                 "method": self._safe_str(method_name),
@@ -358,7 +373,9 @@ class CacheManager:
 
             try:
                 if isinstance(obj, dict):
-                    return {k: _convert_mapping(v) if isinstance(v, dict) else v for k, v in obj.items()}
+                    return {
+                        k: _convert_mapping(v) if isinstance(v, dict) else v for k, v in obj.items()
+                    }
                 converted = []
                 for x in obj:
                     if isinstance(x, dict):
@@ -377,6 +394,7 @@ class CacheManager:
             except Exception:
                 return obj
         return obj
+
     @staticmethod
     def _to_date(value: Optional[Any]) -> Optional[Date]:
         if value is None:

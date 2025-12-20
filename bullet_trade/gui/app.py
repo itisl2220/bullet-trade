@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 
 from .main_window import MainWindow
+from .config_manager import ConfigManager
 from ..utils.env_loader import load_env
 
 
@@ -20,8 +21,12 @@ class BulletTradeApp:
 
     def run(self):
         """运行GUI应用程序"""
-        # 加载环境变量
+        # 加载环境变量（从.env文件）
         load_env()
+        
+        # 加载GUI配置并应用到环境变量（优先级高于.env文件）
+        config_manager = ConfigManager()
+        config_manager.apply_to_env()
 
         # 创建QApplication
         self.app = QApplication(sys.argv)

@@ -1,0 +1,65 @@
+{
+  "strategy": {
+    "settings": {
+      "benchmark": "000300.XSHG",
+      "options": {
+        "avoid_future_data": false,
+        "match_by_signal": false,
+        "order_match_mode": "immediate",
+        "order_volume_ratio": 0.25,
+        "use_real_price": true
+      },
+      "order_cost": {
+        "fund": {
+          "close_commission": 0.0003,
+          "close_tax": 0.0,
+          "close_today_commission": 0.0,
+          "commission_type": "by_money",
+          "min_commission": 5.0,
+          "open_commission": 0.0003,
+          "open_tax": 0.0
+        },
+        "money_market_fund": {
+          "close_commission": 0.0,
+          "close_tax": 0.0,
+          "close_today_commission": 0.0,
+          "commission_type": "by_money",
+          "min_commission": 0.0,
+          "open_commission": 0.0,
+          "open_tax": 0.0
+        },
+        "stock": {
+          "close_commission": 0.0003,
+          "close_tax": 0.001,
+          "close_today_commission": 0.0,
+          "commission_type": "by_money",
+          "min_commission": 5.0,
+          "open_commission": 0.0003,
+          "open_tax": 0.0
+        }
+      }
+    },
+    "strategy_hash": "fefdcff8e729b65493e263d6488a0ddc",
+    "tasks": [
+      {
+        "enabled": true,
+        "func": "trade",
+        "module": "strategy",
+        "monthday": null,
+        "schedule_type": "daily",
+        "time": "open",
+        "weekday": null
+      },
+      {
+        "enabled": true,
+        "func": "after_market_close",
+        "module": "strategy",
+        "monthday": null,
+        "schedule_type": "daily",
+        "time": "after_close",
+        "weekday": null
+      }
+    ],
+    "version": 1
+  }
+}
