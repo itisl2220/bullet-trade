@@ -1,0 +1,21 @@
+[package]
+name = "strategy_crypto"
+version = "0.1.0"
+edition = "2021"
+description = "Strategy encryption/decryption for Lianhua (pyo3 AES-GCM)"
+license = "MIT"
+
+[lib]
+name = "strategy_crypto"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["extension-module"] }
+aes-gcm = { version = "0.10", features = ["aes"] }
+rand = "0.8"
+base64 = "0.21"
+hex = "0.4"
+
+[profile.release]
+opt-level = "z"
+lto = true

@@ -161,28 +161,62 @@ class BacktestEngine:
         unschedule_all()
         
         try:
-            # 动态加载策略模块
-            spec = importlib.util.spec_from_file_location("strategy", self.strategy_file)
-            if spec and spec.loader:
-                strategy_module = importlib.util.module_from_spec(spec)
+            # 先尝试读取文件字节，并在可用时通过 strategy_crypto 解密
+            from pathlib import Path
+            import os
+            import types
+
+            strategy_path = Path(self.strategy_file)
+            data = strategy_path.read_bytes()
+            decrypted_source: Optional[str] = None
+
+            try:
+                # 尝试导入已编译的 rust 扩展模块 strategy_crypto（若未安装则跳过）
+                import strategy_crypto  # type: ignore
+                key = os.getenv("STRATEGY_KEY", "") or ""
+                try:
+                    dec = strategy_crypto.decrypt_bytes(key, data)
+                    # pyo3 返回 bytes-like 对象
+                    if isinstance(dec, (bytes, bytearray)):
+                        decrypted_source = dec.decode("utf-8")
+                    else:
+                        try:
+                            decrypted_source = bytes(dec).decode("utf-8")
+                        except Exception:
+                            decrypted_source = None
+                except Exception as dec_err:
+                    log.debug(f"尝试使用 strategy_crypto 解密失败: {dec_err}")
+            except Exception:
+                # 无法导入 strategy_crypto，保持原有加载流程
+                pass
+
+            if decrypted_source is not None:
+                # 使用解密后的源码直接创建模块并执行（避免写临时文件）
+                strategy_module = types.ModuleType("strategy")
                 sys.modules["strategy"] = strategy_module
-                
                 # 注入全局变量和函数
                 self._inject_globals(strategy_module)
-                
-                # 加载模块
-                spec.loader.exec_module(strategy_module)
-                
-                # 获取策略函数
-                self.initialize_func = getattr(strategy_module, 'initialize', None)
-                self.handle_data_func = getattr(strategy_module, 'handle_data', None)
-                self.before_trading_start_func = getattr(strategy_module, 'before_trading_start', None)
-                self.after_trading_end_func = getattr(strategy_module, 'after_trading_end', None)
-                
-                log.info("策略文件加载成功")
+                exec(compile(decrypted_source, str(strategy_path), "exec"), strategy_module.__dict__)
             else:
-                raise ValueError(f"无法加载策略文件: {self.strategy_file}")
-                
+                # 回退到原有的基于文件的动态导入
+                spec = importlib.util.spec_from_file_location("strategy", self.strategy_file)
+                if spec and spec.loader:
+                    strategy_module = importlib.util.module_from_spec(spec)
+                    sys.modules["strategy"] = strategy_module
+                    # 注入全局变量和函数
+                    self._inject_globals(strategy_module)
+                    # 加载模块
+                    spec.loader.exec_module(strategy_module)
+                else:
+                    raise ValueError(f"无法加载策略文件: {self.strategy_file}")
+
+            # 获取策略函数
+            self.initialize_func = getattr(strategy_module, "initialize", None)
+            self.handle_data_func = getattr(strategy_module, "handle_data", None)
+            self.before_trading_start_func = getattr(strategy_module, "before_trading_start", None)
+            self.after_trading_end_func = getattr(strategy_module, "after_trading_end", None)
+
+            log.info("策略文件加载成功")
         except Exception as e:
             log.error(f"加载策略失败: {e}")
             raise

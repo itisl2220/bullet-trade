@@ -1,3 +1,33 @@
+简单的 Nuxt 3 SSR 后端管理骨架（包含 Prisma PostgreSQL 配置与示例 API）。
+
+快速开始：
+
+1. 安装依赖：
+
+```bash
+npm install
+```
+
+2. 生成 Prisma client 并迁移（开发机）：
+
+```bash
+npx prisma generate
+# 编辑 prisma/schema.prisma 后运行
+npx prisma migrate dev --name init
+```
+
+3. 本地运行：
+
+```bash
+npm run dev
+```
+
+4. 使用 docker-compose：
+
+```bash
+docker-compose up --build
+```
+
 # BulletTrade 
 
 <p>
