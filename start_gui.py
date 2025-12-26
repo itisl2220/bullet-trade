@@ -16,19 +16,19 @@ if str(project_root) not in sys.path:
 
 try:
     from bullet_trade.gui.app import main
-    
-    if __name__ == '__main__':
+
+    if __name__ == "__main__":
         sys.exit(main())
 except ImportError as e:
-    print(f"❌ 导入错误: {e}")
-    print("\n请确保已安装 BulletTrade 和 GUI 依赖：")
+    print(f"Import error: {e}")
+    print("\nPlease ensure BulletTrade and GUI dependencies are installed:")
     print("  pip install bullet-trade[gui]")
-    print("\n或者安装 PyQt6：")
+    print("\nOr install PyQt6:")
     print("  pip install PyQt6>=6.4.0")
     sys.exit(1)
 except Exception as e:
-    print(f"❌ 启动GUI失败: {e}")
+    print(f"Failed to start GUI: {e}")
     import traceback
+
     traceback.print_exc()
     sys.exit(1)
-

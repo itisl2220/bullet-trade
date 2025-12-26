@@ -9,11 +9,12 @@ import inspect as _inspect
 import sys
 import re
 from typing import Dict, Any, Callable, Optional, List, Sequence, Tuple
-from datetime import datetime, timedelta, time as Time
+from datetime import datetime, timedelta, time as Time, date
 import pandas as pd
 import numpy as np
 import time
 from decimal import Decimal, ROUND_HALF_UP
+
 # from pathlib import Path  # removed: use local import in _setup_log_file
 # Optional import: jqdatasdk for fallback in strategy wrapper
 # try:
@@ -21,9 +22,64 @@ from decimal import Decimal, ROUND_HALF_UP
 # except Exception:
 jq = None
 
+import os
+import requests
+import json
+
+
+def _get_strategy_server_base() -> str:
+    return os.getenv("STRATEGY_SERVER_URL") or os.getenv("BT_SERVER_URL") or "http://127.0.0.1:3000"
+
+
+def download_remote_strategy(strategy_id: str) -> bytes:
+    """从后端下载加密的策略二进制（不解密）"""
+    base = _get_strategy_server_base().rstrip("/")
+    url = f"{base}/api/strategies/{strategy_id}/download"
+    headers = {}
+    token = os.getenv("STRATEGY_API_TOKEN") or os.getenv("BT_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        return resp.content
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"HTTP error when downloading strategy: {e}")
+    except Exception as e:
+        raise RuntimeError(f"failed to download strategy: {e}")
+
+
+def fetch_remote_strategy_key(strategy_id: str) -> Optional[str]:
+    """从后端请求 per-strategy key（返回 base64 字符串）"""
+    base = _get_strategy_server_base().rstrip("/")
+    url = f"{base}/api/strategies/{strategy_id}/key"
+    headers = {"Accept": "application/json"}
+    token = os.getenv("STRATEGY_API_TOKEN") or os.getenv("BT_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict) and "key_b64" in data:
+            return data["key_b64"]
+        return None
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"HTTP error when fetching key: {e}")
+    except Exception as e:
+        raise RuntimeError(f"failed to fetch strategy key: {e}")
+
+
 from .models import Context, Portfolio, Position, Trade, OrderStatus
 from .globals import g, log, reset_globals
-from .settings import get_settings, reset_settings, OrderCost, FixedSlippage, PriceRelatedSlippage, StepRelatedSlippage
+from .settings import (
+    get_settings,
+    reset_settings,
+    OrderCost,
+    FixedSlippage,
+    PriceRelatedSlippage,
+    StepRelatedSlippage,
+)
 from .orders import get_order_queue, clear_order_queue, MarketOrderStyle, LimitOrderStyle
 from .scheduler import (
     generate_daily_schedule,
@@ -51,13 +107,13 @@ PRE_MARKET_OFFSET = timedelta(minutes=30)
 
 class BacktestEngine:
     """回测引擎"""
-    
+
     def __init__(
         self,
         strategy_file: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        frequency: str = 'day',
+        frequency: str = "day",
         initial_cash: float = 100000,
         benchmark: Optional[str] = None,
         log_file: Optional[str] = None,
@@ -74,7 +130,7 @@ class BacktestEngine:
     ):
         """
         初始化回测引擎
-        
+
         Args:
             strategy_file: 策略文件路径（与函数参数二选一）
             start_date: 回测开始日期 'YYYY-MM-DD'（可在run()中指定）
@@ -102,14 +158,14 @@ class BacktestEngine:
         self.initial_cash = initial_cash
         self.log_file = log_file
         self.file_handler = None  # 文件处理器
-        
+
         # 策略函数：支持直接传递（测试框架）或从文件加载
         self.initialize_func: Optional[Callable] = initialize
         self.handle_data_func: Optional[Callable] = handle_data
         self.before_trading_start_func: Optional[Callable] = before_trading_start
         self.after_trading_end_func: Optional[Callable] = after_trading_end
         self.process_initialize_func: Optional[Callable] = process_initialize
-        
+
         self.context: Optional[Context] = None
         self.daily_records = []  # 每日记录
         self.trades = []  # 所有交易记录
@@ -127,12 +183,16 @@ class BacktestEngine:
         # 新增：回测运行耗时（秒）
         self.runtime_seconds: Optional[float] = None
         market_cfg = get_live_trade_config()
-        self._market_buy_percent = float(market_cfg.get('market_buy_price_percent', _DEFAULT_MARKET_BUY_PERCENT))
-        self._market_sell_percent = float(market_cfg.get('market_sell_price_percent', _DEFAULT_MARKET_SELL_PERCENT))
+        self._market_buy_percent = float(
+            market_cfg.get("market_buy_price_percent", _DEFAULT_MARKET_BUY_PERCENT)
+        )
+        self._market_sell_percent = float(
+            market_cfg.get("market_sell_price_percent", _DEFAULT_MARKET_SELL_PERCENT)
+        )
 
     def load_strategy(self):
         """加载策略文件或使用传入的函数"""
-        
+
         # 如果已经通过构造函数传入了策略函数，不需要从文件加载
         if self.initialize_func is not None:
             log.info("使用直接传入的策略函数")
@@ -148,32 +208,54 @@ class BacktestEngine:
             except Exception as _inj_err:
                 log.debug(f"函数策略全局注入失败: {_inj_err}")
             return
-        
+
         # 否则从文件加载
         if not self.strategy_file:
             raise ValueError("必须提供 strategy_file 或 initialize 函数")
-            
+
         log.info(f"加载策略文件: {self.strategy_file}")
-        
+
         # 重置全局状态
         reset_globals()
         reset_settings()
         unschedule_all()
-        
+
         try:
             # 先尝试读取文件字节，并在可用时通过 strategy_crypto 解密
             from pathlib import Path
             import os
             import types
 
+            # download_remote_strategy / fetch_remote_strategy_key 已移动到模块级别
             strategy_path = Path(self.strategy_file)
-            data = strategy_path.read_bytes()
+            # support remote strategies: "remote://<strategy_id>"
+            data = None
+            if isinstance(self.strategy_file, str) and self.strategy_file.startswith("remote://"):
+                strategy_id = self.strategy_file.split("://", 1)[1]
+                try:
+                    data = download_remote_strategy(strategy_id)
+                except Exception as e:
+                    log.debug(f"下载远程策略失败: {e}")
+                    raise
+            else:
+                data = strategy_path.read_bytes()
             decrypted_source: Optional[str] = None
 
             try:
                 # 尝试导入已编译的 rust 扩展模块 strategy_crypto（若未安装则跳过）
                 import strategy_crypto  # type: ignore
-                key = os.getenv("STRATEGY_KEY", "") or ""
+
+                # Determine decryption key:
+                # - If using remote strategy, request per-strategy key from server
+                if isinstance(self.strategy_file, str) and self.strategy_file.startswith(
+                    "remote://"
+                ):
+                    strategy_id = self.strategy_file.split("://", 1)[1]
+                    key_resp = fetch_remote_strategy_key(strategy_id)
+                    # key_resp is base64 string
+                    key = key_resp or ""
+                else:
+                    key = os.getenv("STRATEGY_KEY", "") or ""
                 try:
                     dec = strategy_crypto.decrypt_bytes(key, data)
                     # pyo3 返回 bytes-like 对象
@@ -196,7 +278,9 @@ class BacktestEngine:
                 sys.modules["strategy"] = strategy_module
                 # 注入全局变量和函数
                 self._inject_globals(strategy_module)
-                exec(compile(decrypted_source, str(strategy_path), "exec"), strategy_module.__dict__)
+                exec(
+                    compile(decrypted_source, str(strategy_path), "exec"), strategy_module.__dict__
+                )
             else:
                 # 回退到原有的基于文件的动态导入
                 spec = importlib.util.spec_from_file_location("strategy", self.strategy_file)
@@ -220,13 +304,22 @@ class BacktestEngine:
         except Exception as e:
             log.error(f"加载策略失败: {e}")
             raise
-    
+
     def _inject_globals(self, module):
         """向策略模块注入全局变量和函数"""
         from .globals import g, log
         from .settings import (
-            set_benchmark, set_order_cost, set_commission, set_universe, set_slippage, set_option,
-            OrderCost, PerTrade, FixedSlippage, PriceRelatedSlippage, StepRelatedSlippage
+            set_benchmark,
+            set_order_cost,
+            set_commission,
+            set_universe,
+            set_slippage,
+            set_option,
+            OrderCost,
+            PerTrade,
+            FixedSlippage,
+            PriceRelatedSlippage,
+            StepRelatedSlippage,
         )
         from .api import (
             subscribe as _subscribe,
@@ -244,7 +337,10 @@ class BacktestEngine:
         )
         from .scheduler import run_daily, run_weekly, run_monthly, unschedule_all
         from ..data import api as wrapped_api
-        from .notifications import send_msg as _send_msg, set_message_handler as _set_message_handler
+        from .notifications import (
+            send_msg as _send_msg,
+            set_message_handler as _set_message_handler,
+        )
         from ..utils.strategy_helpers import (
             print_portfolio_info,
             prettytable_print_df,
@@ -254,22 +350,25 @@ class BacktestEngine:
         import datetime as _datetime
         import time as _time
         import random as _random
+
         try:
             import talib as _talib  # type: ignore
         except Exception:  # talib 可能未安装
+
             class _TalibProxy:
                 def __getattr__(self, name):
                     raise ImportError(
                         "TA-Lib 未安装。请先 `pip install TA-Lib` 并确保本机已安装对应的C库。"
                     )
+
             _talib = _TalibProxy()
-        
+
         # 注入全局对象
         module.g = g
         module.log = log
         module.send_msg = _send_msg
         module.set_message_handler = _set_message_handler
-        
+
         # 注入设置函数
         module.set_benchmark = set_benchmark
         module.set_order_cost = set_order_cost
@@ -297,7 +396,7 @@ class BacktestEngine:
         module.order_value = order_value
         module.order_target = order_target
         module.order_target_value = order_target_value
-        
+
         # 注入调度函数
         module.run_daily = run_daily
         module.run_weekly = run_weekly
@@ -308,15 +407,16 @@ class BacktestEngine:
         def record(**kwargs):
             dt = self.context.current_dt
             # 初始化容器
-            if not hasattr(g, 'record_series') or g.record_series is None:
+            if not hasattr(g, "record_series") or g.record_series is None:
                 g.record_series = {}
             for key, value in kwargs.items():
                 series = g.record_series.get(key)
                 if series is None:
                     g.record_series[key] = []
                 g.record_series[key].append((dt, value))
+
         module.record = record
-        
+
         # 注入包装过的数据函数（支持真实价格和未来数据检测）
         module.get_price = wrapped_api.get_price
         module.attribute_history = wrapped_api.attribute_history
@@ -325,7 +425,7 @@ class BacktestEngine:
         module.get_all_securities = wrapped_api.get_all_securities
         module.get_index_stocks = wrapped_api.get_index_stocks
         module.get_security_info = wrapped_api.get_security_info
-        
+
         # 注入numpy和pandas
         module.np = np
         module.pd = pd
@@ -338,10 +438,11 @@ class BacktestEngine:
         # 注入常用打印/报告辅助函数
         module.print_portfolio_info = print_portfolio_info
         module.prettytable_print_df = prettytable_print_df
-        
+
         # 注册 jqdata 兼容模块：使用真正的 ModuleType 并补齐常见导出
         import types as _types
-        jq_mod = _types.ModuleType('jqdata')
+
+        jq_mod = _types.ModuleType("jqdata")
         # 全局对象与常用工具，保证 from jqdata import * 可获取 g/log 等
         jq_mod.g = g
         jq_mod.log = log
@@ -395,11 +496,11 @@ class BacktestEngine:
         jq_mod.unsubscribe_all = _unsubscribe_all
         jq_mod.get_current_tick = _get_current_tick
         # 注入并注册
-        sys.modules['jqdata'] = jq_mod
+        sys.modules["jqdata"] = jq_mod
         module.jqdata = jq_mod
         # 如有需要，可在此处同步注册到 jqdatasdk：保持禁用以避免误用
         # sys.modules['jqdatasdk'] = jq_mod
-    
+
     def run(
         self,
         start_date: Optional[str] = None,
@@ -410,14 +511,14 @@ class BacktestEngine:
     ):
         """
         运行回测
-        
+
         Args:
             start_date: 回测开始日期（可选，优先使用此参数）
             end_date: 回测结束日期（可选，优先使用此参数）
             capital_base: 初始资金（可选，优先使用此参数）
             frequency: 回测频率（可选，优先使用此参数）
             benchmark: 基准标的（可选，优先使用此参数）
-        
+
         Returns:
             Dict[str, Any]: 回测结果
         """
@@ -433,45 +534,48 @@ class BacktestEngine:
         if benchmark is not None:  # 允许传入 None 来不设置基准
             # benchmark 会在load_strategy后通过 set_benchmark 设置
             pass
-            
+
         # 验证必需参数
         if self.start_date is None or self.end_date is None:
             raise ValueError("必须提供 start_date 和 end_date")
-            
+
         # 设置日志文件（如果指定）
         if self.log_file:
             self._setup_log_file()
-        
+
         t0_run = time.time()
-        
+
         log.info("=" * 60)
-        log.info(f"开始回测: {self.start_date.strftime('%Y-%m-%d')} 至 {self.end_date.strftime('%Y-%m-%d')}")
+        log.info(
+            f"开始回测: {self.start_date.strftime('%Y-%m-%d')} 至 {self.end_date.strftime('%Y-%m-%d')}"
+        )
         log.info(f"初始资金: {self.initial_cash:,.2f}")
         log.info(f"回测频率: {self.frequency}")
         if self.log_file:
             log.info(f"日志文件: {self.log_file}")
         log.info("=" * 60)
-        
+
         # 设置回测频率到 settings（供 scheduler 使用）
         from .settings import set_option
-        set_option('backtest_frequency', self.frequency)
-        
+
+        set_option("backtest_frequency", self.frequency)
+
         # 加载策略
         self.load_strategy()
 
         # 注意：load_strategy 内部会调用 reset_settings()，需要重新注入频率配置
-        set_option('backtest_frequency', self.frequency)
-        
+        set_option("backtest_frequency", self.frequency)
+
         # 初始化上下文
         self.context = Context(
             portfolio=Portfolio(
                 total_value=self.initial_cash,
                 available_cash=self.initial_cash,
-                starting_cash=self.initial_cash
+                starting_cash=self.initial_cash,
             ),
-            current_dt=self.start_date
+            current_dt=self.start_date,
         )
-        
+
         # 设置当前上下文（用于数据API）
         set_current_context(self.context)
         # 注册当前引擎实例（供即时撮合使用）
@@ -479,7 +583,7 @@ class BacktestEngine:
             set_current_engine(self)
         except Exception:
             pass
-        
+
         # 新增：注入运行参数与初始持仓
         try:
             # 注入 extras 到全局 g，供策略访问
@@ -487,61 +591,76 @@ class BacktestEngine:
                 g.extras = self.extras
             # 注入运行参数到 context
             self.context.run_params = {
-                'algorithm_id': self.algorithm_id,
-                'start_date': self.start_date.strftime('%Y-%m-%d'),
-                'end_date': self.end_date.strftime('%Y-%m-%d'),
-                'frequency': self.frequency,
-                'initial_cash': self.initial_cash,
-                'extras': self.extras,
-                'initial_positions': self.initial_positions,
+                "algorithm_id": self.algorithm_id,
+                "start_date": self.start_date.strftime("%Y-%m-%d"),
+                "end_date": self.end_date.strftime("%Y-%m-%d"),
+                "frequency": self.frequency,
+                "initial_cash": self.initial_cash,
+                "extras": self.extras,
+                "initial_positions": self.initial_positions,
             }
             # 应用初始持仓（不消耗现金，视为已有持仓）
             self._apply_initial_positions()
             # 设置收益基准为首次总资产（现金+持仓）
-            self.start_total_value = float(self.context.portfolio.available_cash + self.context.portfolio.positions_value + self.context.portfolio.locked_cash)
+            self.start_total_value = float(
+                self.context.portfolio.available_cash
+                + self.context.portfolio.positions_value
+                + self.context.portfolio.locked_cash
+            )
         except Exception as e:
             log.warning(f"初始化参数/持仓注入失败: {e}")
-        
+
         # 调用initialize
         if self.initialize_func:
             log.info("调用策略初始化函数...")
             try:
                 self.initialize_func(self.context)
                 log.info("策略初始化完成")
-                
+
                 # 应用策略参数（在initialize调用后覆盖g.变量）
                 if self.strategy_params:
                     from bullet_trade.core.globals import g
+
                     # 获取策略模块（用于特殊处理）
                     import sys
+
                     strategy_module = sys.modules.get("strategy")
-                    
+
                     # 注入数据API到策略模块（如果需要）
-                    if strategy_module and 'get_index_stocks' not in dir(strategy_module):
+                    if strategy_module and "get_index_stocks" not in dir(strategy_module):
                         from ..data import api as data_api
+
                         strategy_module.get_index_stocks = data_api.get_index_stocks
-                    
+
                     applied_count = 0
                     for param_name, param_value in self.strategy_params.items():
                         try:
                             # 特殊处理：如果参数名是stock_pool或stocks且值是字符串（索引代码），转换为股票列表
-                            if param_name in ('stock_pool', 'stocks') and isinstance(param_value, str):
-                                if strategy_module and hasattr(strategy_module, 'get_index_stocks'):
+                            if param_name in ("stock_pool", "stocks") and isinstance(
+                                param_value, str
+                            ):
+                                if strategy_module and hasattr(strategy_module, "get_index_stocks"):
                                     try:
                                         # 尝试作为索引代码处理
                                         stock_list = strategy_module.get_index_stocks(param_value)
                                         setattr(g, param_name, stock_list)
-                                        log.info(f"应用策略参数: {param_name} = {param_value} (转换为{len(stock_list)}只股票)")
+                                        log.info(
+                                            f"应用策略参数: {param_name} = {param_value} (转换为{len(stock_list)}只股票)"
+                                        )
                                         applied_count += 1
                                         continue
                                     except Exception:
                                         pass
-                                
+
                                 # 如果失败，尝试作为逗号分隔的股票代码列表
-                                if ',' in param_value:
-                                    stock_list = [s.strip() for s in param_value.split(',') if s.strip()]
+                                if "," in param_value:
+                                    stock_list = [
+                                        s.strip() for s in param_value.split(",") if s.strip()
+                                    ]
                                     setattr(g, param_name, stock_list)
-                                    log.info(f"应用策略参数: {param_name} = {len(stock_list)}只股票（从列表）")
+                                    log.info(
+                                        f"应用策略参数: {param_name} = {len(stock_list)}只股票（从列表）"
+                                    )
                                     applied_count += 1
                                     continue
                                 else:
@@ -550,17 +669,17 @@ class BacktestEngine:
                                     log.info(f"应用策略参数: {param_name} = [{param_value}]")
                                     applied_count += 1
                                     continue
-                            
+
                             # 普通参数直接设置
                             setattr(g, param_name, param_value)
                             log.info(f"应用策略参数: {param_name} = {param_value}")
                             applied_count += 1
                         except Exception as e:
                             log.warning(f"应用策略参数失败 {param_name}: {e}")
-                    
+
                     if applied_count > 0:
                         log.info(f"已应用 {applied_count} 个策略参数")
-                
+
                 # 根据 extras 覆盖 g.xxx（在策略初始化后执行）
                 try:
                     if self.extras:
@@ -577,10 +696,14 @@ class BacktestEngine:
                 # 避免重复：若 before_market_open/market_open 已通过调度注册，则取消直接调用
                 try:
                     tasks = get_tasks()
-                    if self.before_trading_start_func and any(t.func is self.before_trading_start_func for t in tasks):
+                    if self.before_trading_start_func and any(
+                        t.func is self.before_trading_start_func for t in tasks
+                    ):
                         log.debug("检测到 before_market_open 已由调度注册，取消重复直接调用")
                         self.before_trading_start_func = None
-                    if self.handle_data_func and any(t.func is self.handle_data_func for t in tasks):
+                    if self.handle_data_func and any(
+                        t.func is self.handle_data_func for t in tasks
+                    ):
                         log.debug("检测到 market_open 已由调度注册，取消重复直接调用")
                         self.handle_data_func = None
                 except Exception as ex:
@@ -588,19 +711,17 @@ class BacktestEngine:
             except Exception as e:
                 log.error(f"策略初始化失败: {e}")
                 import traceback
+
                 log.error(traceback.format_exc())
                 raise
-        
+
         # 获取交易日列表（直接使用Provider，避免上下文限制导致只取到起始日）
         provider = get_data_provider()
-        trade_days = provider.get_trade_days(
-            start_date=self.start_date,
-            end_date=self.end_date
-        )
+        trade_days = provider.get_trade_days(start_date=self.start_date, end_date=self.end_date)
         trade_days = [pd.to_datetime(d) for d in trade_days]
-        
+
         log.info(f"交易日数量: {len(trade_days)}")
-        
+
         # 如果没有交易日，提前返回
         if not trade_days:
             log.warning(f"⚠️  回测区间 {self.start_date} 至 {self.end_date} 内没有交易日")
@@ -609,10 +730,10 @@ class BacktestEngine:
             log.warning("  2. 回测日期超出数据源的可用范围")
             log.warning("  3. 回测日期为未来日期")
             log.warning("建议：请检查回测日期范围，或选择包含有效交易日的日期区间")
-            
+
             # 返回空结果
             return self._generate_empty_results()
-        
+
         # 获取回测第一天的前一个交易日（用于初始化 previous_date）
         first_day_previous_date = None
         if trade_days:
@@ -620,32 +741,31 @@ class BacktestEngine:
                 # 获取第一个交易日之前的1个交易日（直接使用Provider）
                 provider = get_data_provider()
                 before_first_day = provider.get_trade_days(
-                    end_date=trade_days[0],
-                    count=2  # 包括第一天本身和前一天
+                    end_date=trade_days[0], count=2  # 包括第一天本身和前一天
                 )
                 if len(before_first_day) >= 2:
                     first_day_previous_date = pd.to_datetime(before_first_day[0]).date()
                     log.info(f"回测第一天的前一交易日: {first_day_previous_date}")
             except Exception as e:
                 log.warning(f"获取回测第一天的前一交易日失败: {e}")
-        
+
         # 获取基准数据
         settings = get_settings()
         if settings.benchmark:
             self._load_benchmark_data(settings.benchmark)
-        
+
         # 逐日回测
         for i, trade_day in enumerate(trade_days):
             # 更新前一个时间点
             self.context.previous_dt = self.context.current_dt if i > 0 else None
-            
+
             # 更新前一个交易日（date 类型）
             if i > 0:
-                self.context.previous_date = trade_days[i-1].date()
+                self.context.previous_date = trade_days[i - 1].date()
             else:
                 # 第一天使用回测开始前的交易日
                 self.context.previous_date = first_day_previous_date
-            
+
             # 更新当前时间
             self.context.current_dt = trade_day
 
@@ -673,65 +793,61 @@ class BacktestEngine:
 
             # 新增：记录每日持仓快照（已是收盘价）
             self._record_daily_positions()
-        
+
         log.info("\n" + "=" * 60)
         log.info("回测完成")
         log.info("=" * 60)
-        
+
         # 清理日志文件处理器
         if self.log_file:
             self._cleanup_log_file()
-        
+
         # 记录运行耗时
         try:
             self.runtime_seconds = float(time.time() - t0_run)
             log.info(f"本次回测耗时: {self.runtime_seconds:.3f} 秒")
         except Exception:
             pass
-        
+
         return self._generate_results()
-    
+
     def _setup_log_file(self):
         """设置日志文件处理器，级别由 LOG_FILE_LEVEL 环境变量控制"""
         try:
             import logging
             from pathlib import Path
-            
+
             # 确保日志目录存在
             log_path = Path(self.log_file)
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # 读取文件日志级别配置（LOG_FILE_LEVEL，未设置则跟随 LOG_LEVEL）
             try:
                 from bullet_trade.utils.env_loader import get_system_config
+
                 sys_cfg = get_system_config() or {}
-                file_level_name = str(sys_cfg.get('log_file_level', 'INFO')).upper()
+                file_level_name = str(sys_cfg.get("log_file_level", "INFO")).upper()
                 file_level = getattr(logging, file_level_name, logging.INFO)
             except Exception:
                 file_level = logging.INFO
-            
+
             # 创建文件处理器
-            self.file_handler = logging.FileHandler(
-                self.log_file, 
-                mode='w', 
-                encoding='utf-8'
-            )
+            self.file_handler = logging.FileHandler(self.log_file, mode="w", encoding="utf-8")
             self.file_handler.setLevel(file_level)
-            
+
             # 设置日志格式
             formatter = logging.Formatter(
-                '%(asctime)s [%(levelname)s] %(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
+                "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
             )
             self.file_handler.setFormatter(formatter)
-            
+
             # 确保 logger 主体级别不高于文件级别，否则消息会被过滤
             if log.logger.level > file_level:
                 log.logger.setLevel(file_level)
-            
+
             # 添加到 jq_strategy logger
             log.logger.addHandler(self.file_handler)
-            
+
             # 同步到 bullet_trade logger，确保 miniqmt 等模块的日志也写入文件
             try:
                 std_logger = logging.getLogger("bullet_trade")
@@ -740,12 +856,12 @@ class BacktestEngine:
                     std_logger.setLevel(file_level)
             except Exception:
                 pass
-            
+
             log.info(f"日志将同时输出到文件: {self.log_file} (级别: {file_level_name})")
-            
+
         except Exception as e:
             log.warning(f"设置日志文件失败: {e}")
-    
+
     def _cleanup_log_file(self):
         """清理日志文件处理器"""
         try:
@@ -756,6 +872,7 @@ class BacktestEngine:
                 # 同时从 bullet_trade logger 移除
                 try:
                     import logging
+
                     std_logger = logging.getLogger("bullet_trade")
                     std_logger.removeHandler(self.file_handler)
                 except Exception:
@@ -764,7 +881,7 @@ class BacktestEngine:
                 log.info(f"日志已保存至: {self.log_file}")
         except Exception as e:
             log.warning(f"清理日志文件处理器失败: {e}")
-    
+
     def _update_current_time(self, current_dt: datetime, previous_dt: Optional[datetime]):
         """更新上下文当前时间并同步日志、引擎状态。"""
         self.context.previous_dt = previous_dt
@@ -826,6 +943,7 @@ class BacktestEngine:
                 except Exception as e:
                     log.error(f"定时任务执行失败 {task.func.__name__}: {e}")
                     import traceback
+
                     log.error(traceback.format_exc())
 
             if current_dt == pre_open_dt and self.before_trading_start_func:
@@ -834,6 +952,7 @@ class BacktestEngine:
                 except Exception as e:
                     log.error(f"盘前函数执行失败: {e}")
                     import traceback
+
                     log.error(traceback.format_exc())
 
             if current_dt == open_dt and self.handle_data_func:
@@ -845,6 +964,7 @@ class BacktestEngine:
                 except Exception as e:
                     log.error(f"交易函数执行失败: {e}")
                     import traceback
+
                     log.error(traceback.format_exc())
 
             if self._is_trading_time(current_dt, market_periods):
@@ -856,11 +976,12 @@ class BacktestEngine:
                 except Exception as e:
                     log.error(f"盘后函数执行失败: {e}")
                     import traceback
+
                     log.error(traceback.format_exc())
 
     def _apply_dividends_for_day(self, trade_day: datetime):
         """开盘前处理当日生效的权益变动（分红、送转/拆分），同步持仓与现金口径。
-        
+
         注意：如果除权日当天停牌，延迟到复牌日再处理（与聚宽行为一致）。
         """
         portfolio = self.context.portfolio
@@ -869,62 +990,70 @@ class BacktestEngine:
 
         # 税务口径：股票默认按 20% 预提，公募基金类免税（可由配置覆盖）
         settings = get_settings()
-        tax_rate = settings.options.get('dividend_tax_rate', 0.20)
+        tax_rate = settings.options.get("dividend_tax_rate", 0.20)
 
         # 取当日权益变动事件；若除权除息日期落在非交易日或停牌日，则顺延到后续首个交易日盘前处理
         # 注意：需要往前多查几天，以包含因停牌而延迟的分红事件
         current_date = trade_day.date()
-        prev_date = getattr(self.context, 'previous_date', None)
+        prev_date = getattr(self.context, "previous_date", None)
         # 往前查 10 天，以覆盖可能因停牌延迟的分红事件
         query_start = current_date - timedelta(days=10)
 
         for code, pos in list(portfolio.positions.items()):
             try:
-                corp_actions = self._load_corporate_actions(code, start_date=query_start, end_date=current_date)
+                corp_actions = self._load_corporate_actions(
+                    code, start_date=query_start, end_date=current_date
+                )
                 if not corp_actions:
                     continue
 
                 for action in corp_actions:
-                    eff_date = action.get('date')
-                    split_ratio = float(action.get('scale_factor', 1.0) or 1.0)
-                    gross_div = float(action.get('bonus_pre_tax', 0.0) or 0.0)
-                    
+                    eff_date = action.get("date")
+                    split_ratio = float(action.get("scale_factor", 1.0) or 1.0)
+                    gross_div = float(action.get("bonus_pre_tax", 0.0) or 0.0)
+
                     # 生成事件唯一键，用于避免重复处理
                     event_key = f"{code}_{eff_date}_{split_ratio}_{gross_div}"
                     if event_key in self._processed_dividend_keys:
                         log.debug(f"{code} 分红/拆分事件已处理过，跳过: {event_key}")
                         continue
-                    
+
                     # 记录完整的分红/拆分事件信息
                     log.debug(
                         f"{code} 分红/拆分事件: 除权日={eff_date}, 当前日={current_date}, "
                         f"拆分比例={split_ratio:.4f}, 派息={gross_div:.4f}, "
                         f"当前持仓={pos.total_amount}股, 当前价格={pos.price:.4f}"
                     )
-                    
+
                     if not self._is_action_effective_today(action, current_date):
-                        log.debug(f"{code} 分红/拆分事件: 除权日 {eff_date} 未到当日 {current_date}，跳过")
+                        log.debug(
+                            f"{code} 分红/拆分事件: 除权日 {eff_date} 未到当日 {current_date}，跳过"
+                        )
                         continue
-                    
+
                     # 检查除权日当天是否停牌：如果停牌则延迟到复牌日处理
                     # 使用直接调用 provider 的方式绕过 avoid_future_data 限制
                     is_paused = self._is_security_paused_on_date(code, eff_date)
                     log.debug(f"{code} 停牌检测结果: 除权日 {eff_date} 停牌={is_paused}")
-                    
+
                     if is_paused:
                         if eff_date == current_date:
                             # 除权日就是今天，今天停牌，延迟处理
-                            log.info(f"{code} 在除权日 {current_date} 停牌，除权事件（拆分={split_ratio:.4f}，派息={gross_div:.4f}）延迟到复牌日处理")
+                            log.info(
+                                f"{code} 在除权日 {current_date} 停牌，除权事件（拆分={split_ratio:.4f}，派息={gross_div:.4f}）延迟到复牌日处理"
+                            )
                             continue
                         else:
                             # 除权日已过去且停牌，今天是复牌后的第一个处理机会
-                            log.info(f"{code} 除权日 {eff_date} 停牌，今日 {current_date} 执行延迟的除权事件")
+                            log.info(
+                                f"{code} 除权日 {eff_date} 停牌，今日 {current_date} 执行延迟的除权事件"
+                            )
 
-                    sec_type = action.get('security_type', 'stock')
+                    sec_type = action.get("security_type", "stock")
                     # 内部口径：统一为 split_ratio/gross_div/base_lot
-                    split_ratio = float(action.get('scale_factor', 1.0) or 1.0)
-                    gross_div = float(action.get('bonus_pre_tax', 0.0) or 0.0)
-                    base_lot = int(action.get('per_base', 10) or 10)
+                    split_ratio = float(action.get("scale_factor", 1.0) or 1.0)
+                    gross_div = float(action.get("bonus_pre_tax", 0.0) or 0.0)
+                    base_lot = int(action.get("per_base", 10) or 10)
 
                     # 记录事件前股数用于现金红利口径（若同日既有拆分又有现金红利，按拆分前股数计算）
                     pre_event_amount = pos.total_amount
@@ -952,7 +1081,7 @@ class BacktestEngine:
                             eff_date=eff_date,
                             portfolio=portfolio,
                         )
-                    
+
                     # 记录已处理的分红事件，避免重复处理
                     self._processed_dividend_keys.add(event_key)
                     log.debug(f"{code} 分红/拆分事件已处理: {event_key}")
@@ -961,19 +1090,19 @@ class BacktestEngine:
 
         # 更新账户价值
         portfolio.update_value()
-    
+
     def _get_order_cost_config(self, security: str) -> OrderCost:
         info = get_security_info(security)
         category = self._infer_security_category(security, info)
         settings = get_settings()
-        type_hint = str(info.get('type') or category).lower()
+        type_hint = str(info.get("type") or category).lower()
         order_cost = settings.order_cost_overrides.get(f"{category}_{security}")
         if not order_cost:
             order_cost = settings.order_cost_overrides.get(f"{type_hint}_{security}")
         if not order_cost:
             order_cost = settings.order_cost.get(category)
-        if not order_cost and category != 'stock':
-            order_cost = settings.order_cost.get('stock')
+        if not order_cost and category != "stock":
+            order_cost = settings.order_cost.get("stock")
         if not order_cost:
             order_cost = OrderCost()
         return order_cost
@@ -981,49 +1110,56 @@ class BacktestEngine:
     @staticmethod
     def _infer_security_category(security: str, info: Dict[str, Any]) -> str:
         """推断证券分类，用于确定价格精度、交易规则和费用。
-        
+
         分类来源优先级（由 get_security_info + security_overrides.json 决定）：
         1. by_code 显式指定的 category（最高优先级）
         2. by_prefix 前缀映射的 category
         3. 数据源返回的 type/subtype
         4. 默认为 stock
-        
+
         Returns:
             str: 'money_market_fund' | 'fund' | 'stock'
         """
         # get_security_info 已合并 security_overrides.json 的配置（by_code > by_prefix）
         # 所以 info.get('category') 已经是最终结果
-        explicit = str(info.get('category') or '').lower()
-        if explicit in ('money_market_fund', 'fund', 'stock', 'futures'):
+        explicit = str(info.get("category") or "").lower()
+        if explicit in ("money_market_fund", "fund", "stock", "futures"):
             return explicit
 
         # 兼容数据源返回的 type/subtype 字段
-        subtype = str(info.get('subtype') or '').lower()
-        primary = str(info.get('type') or '').lower()
+        subtype = str(info.get("subtype") or "").lower()
+        primary = str(info.get("type") or "").lower()
 
-        if subtype in ('mmf', 'money_market_fund'):
-            return 'money_market_fund'
-        if primary in ('fund', 'etf'):
+        if subtype in ("mmf", "money_market_fund"):
+            return "money_market_fund"
+        if primary in ("fund", "etf"):
             # jqdatasdk 返回 type='etf'，统一归类为 fund
-            return 'fund'
-        if primary == 'futures':
-            return 'futures'
-        if primary == 'stock':
-            return 'stock'
+            return "fund"
+        if primary == "futures":
+            return "futures"
+        if primary == "stock":
+            return "stock"
 
         # 默认视为股票（security_overrides.json 的 by_prefix 已在 get_security_info 中处理）
-        return 'stock'
+        return "stock"
 
-    def _calc_trade_price_with_default_slippage(self, price: float, is_buy: bool, security: str, info: Optional[Dict[str, Any]] = None, category: Optional[str] = None) -> float:
+    def _calc_trade_price_with_default_slippage(
+        self,
+        price: float,
+        is_buy: bool,
+        security: str,
+        info: Optional[Dict[str, Any]] = None,
+        category: Optional[str] = None,
+    ) -> float:
         """未显式配置滑点时，按品类采用默认值；现金类不应用滑点。"""
         if info is None:
             info = get_security_info(security)
         if category is None:
             category = self._infer_security_category(security, info)
         # 可由 overrides 指定精确值
-        ratio = info.get('slippage')
+        ratio = info.get("slippage")
         if not isinstance(ratio, (int, float)):
-            if category == 'money_market_fund':
+            if category == "money_market_fund":
                 ratio = 0.0
             else:
                 ratio = 0.00246  # 默认值 24.6bps（常见设置），可通过配置覆盖
@@ -1032,43 +1168,45 @@ class BacktestEngine:
         half = float(ratio) / 2.0
         return price * (1 + half) if is_buy else price * (1 - half)
 
-    def _select_slippage_config(self, security: str, category: str, info: Dict[str, Any]) -> Optional[Any]:
+    def _select_slippage_config(
+        self, security: str, category: str, info: Dict[str, Any]
+    ) -> Optional[Any]:
         """按聚宽语义解析滑点配置优先级。"""
         settings = get_settings()
-        sl_map = getattr(settings, 'slippage_map', {}) or {}
+        sl_map = getattr(settings, "slippage_map", {}) or {}
         if not sl_map:
             return None
         keys = []
         code = security
-        type_hint = str(info.get('type') or '').lower()
-        subtype = str(info.get('subtype') or '').lower()
+        type_hint = str(info.get("type") or "").lower()
+        subtype = str(info.get("subtype") or "").lower()
 
-        if category == 'stock':
-            keys.append(f'stock_{code}')
-            keys.append('stock')
-        elif category == 'fund' or subtype in ('fund', 'index'):
-            keys.append(f'fund_{code}')
-            keys.append('fund')
-        elif category == 'money_market_fund' or subtype in ('mmf', 'money_market_fund'):
+        if category == "stock":
+            keys.append(f"stock_{code}")
+            keys.append("stock")
+        elif category == "fund" or subtype in ("fund", "index"):
+            keys.append(f"fund_{code}")
+            keys.append("fund")
+        elif category == "money_market_fund" or subtype in ("mmf", "money_market_fund"):
             return None
 
-        if type_hint == 'index' and category != 'stock':
-            keys.append(f'fund_{code}')
-            keys.append('fund')
+        if type_hint == "index" and category != "stock":
+            keys.append(f"fund_{code}")
+            keys.append("fund")
 
-        if type_hint == 'futures' or category == 'futures':
-            keys.append(f'futures_{code}')
+        if type_hint == "futures" or category == "futures":
+            keys.append(f"futures_{code}")
             try:
-                tag = re.sub(r'\\d+.*', '', code.split('.')[0])
+                tag = re.sub(r"\\d+.*", "", code.split(".")[0])
                 if tag:
-                    keys.append(f'futures_{tag}')
+                    keys.append(f"futures_{tag}")
             except Exception:
                 pass
-            keys.append('futures')
+            keys.append("futures")
 
         keys.append(code)
         keys.append(category)
-        keys.append('all')
+        keys.append("all")
 
         seen = set()
         for key in keys:
@@ -1080,7 +1218,15 @@ class BacktestEngine:
                 return cfg
         return None
 
-    def _apply_slippage_config(self, config: Any, price: float, is_buy: bool, security: str, category: str, info: Dict[str, Any]) -> float:
+    def _apply_slippage_config(
+        self,
+        config: Any,
+        price: float,
+        is_buy: bool,
+        security: str,
+        category: str,
+        info: Dict[str, Any],
+    ) -> float:
         """根据配置计算滑点后的价格。"""
         try:
             if isinstance(config, PriceRelatedSlippage):
@@ -1094,7 +1240,7 @@ class BacktestEngine:
                 half = float(config.value) / 2.0
                 return price + half if is_buy else price - half
             # 兜底：若实现了 calculate_slippage 接口
-            if hasattr(config, 'calculate_slippage'):
+            if hasattr(config, "calculate_slippage"):
                 return config.calculate_slippage(price, is_buy)
         except Exception as exc:
             log.debug(f"应用滑点失败 {security}: {exc}")
@@ -1104,8 +1250,8 @@ class BacktestEngine:
         """统一处理滑点选择与回退。"""
         info = get_security_info(security)
         category = self._infer_security_category(security, info)
-        subtype = str(info.get('subtype') or '').lower()
-        if category == 'money_market_fund' or subtype in ('mmf', 'money_market_fund'):
+        subtype = str(info.get("subtype") or "").lower()
+        if category == "money_market_fund" or subtype in ("mmf", "money_market_fund"):
             return price
 
         settings = get_settings()
@@ -1113,15 +1259,21 @@ class BacktestEngine:
         if cfg:
             return self._apply_slippage_config(cfg, price, is_buy, security, category, info)
         if settings.slippage:
-            return self._apply_slippage_config(settings.slippage, price, is_buy, security, category, info)
-        return self._calc_trade_price_with_default_slippage(price, is_buy, security, info=info, category=category)
+            return self._apply_slippage_config(
+                settings.slippage, price, is_buy, security, category, info
+            )
+        return self._calc_trade_price_with_default_slippage(
+            price, is_buy, security, info=info, category=category
+        )
 
     @staticmethod
     def _round_half_up(value: float, decimals: int) -> float:
         q = Decimal(10) ** -decimals
         return float(Decimal(str(value)).quantize(q, rounding=ROUND_HALF_UP))
 
-    def _round_to_tick(self, price: float, security: str, *, is_buy: Optional[bool] = None) -> float:
+    def _round_to_tick(
+        self, price: float, security: str, *, is_buy: Optional[bool] = None
+    ) -> float:
         """按最小报价单位处理价格：
         - 股票: 0.01
         - 基金/ETF/货基: 0.001
@@ -1131,6 +1283,7 @@ class BacktestEngine:
         if step <= 0:
             return price
         import math
+
         ticks = price / step
         if is_buy is True:
             ticks_rounded = math.ceil(ticks - 1e-12)
@@ -1141,14 +1294,16 @@ class BacktestEngine:
             ticks_rounded = math.floor(ticks + 0.5)
         return round(ticks_rounded * step, 3 if step == 0.001 else 2)
 
-    def _tick_step_for_security(self, security: str, info: Optional[Dict[str, Any]] = None, category: Optional[str] = None) -> float:
+    def _tick_step_for_security(
+        self, security: str, info: Optional[Dict[str, Any]] = None, category: Optional[str] = None
+    ) -> float:
         """返回标的对应的最小报价步长。"""
         if info is None:
             info = get_security_info(security)
         if category is None:
             category = self._infer_security_category(security, info)
-        tick_decimals = info.get('tick_decimals')
-        tick_size = info.get('tick_size')
+        tick_decimals = info.get("tick_decimals")
+        tick_size = info.get("tick_size")
         try:
             if isinstance(tick_size, (int, float)) and tick_size > 0:
                 return float(tick_size)
@@ -1156,7 +1311,7 @@ class BacktestEngine:
                 return float(round(10 ** (-int(tick_decimals)), 6))
         except Exception:
             pass
-        return 0.01 if category == 'stock' else 0.001
+        return 0.01 if category == "stock" else 0.001
 
     def _rollover_tplus_for_new_day(self) -> None:
         """在新交易日开始时释放 T+1 锁定的当日买入量。"""
@@ -1167,7 +1322,7 @@ class BacktestEngine:
                 info = get_security_info(code)
                 tplus = self._infer_tplus_from_info(info)
                 if tplus == 1:
-                    add = getattr(pos, 'today_buy_t1', 0) or 0
+                    add = getattr(pos, "today_buy_t1", 0) or 0
                     if add > 0:
                         pos.closeable_amount += add
                         pos.today_buy_t1 = 0
@@ -1243,14 +1398,14 @@ class BacktestEngine:
     def _infer_tplus_from_info(info):
         if not isinstance(info, dict):
             return 0
-        raw = info.get('tplus')
+        raw = info.get("tplus")
         if raw is not None:
             try:
                 return int(raw)
             except Exception:
                 pass
-        sec_type = str(info.get('type') or '').lower()
-        return 1 if sec_type == 'stock' else 0
+        sec_type = str(info.get("type") or "").lower()
+        return 1 if sec_type == "stock" else 0
 
     def _apply_cash_dividend(
         self,
@@ -1329,7 +1484,9 @@ class BacktestEngine:
         except Exception:
             pass
 
-    def _resolve_base_exec_price(self, security: str, current_dt: datetime, fq_mode: str) -> Optional[float]:
+    def _resolve_base_exec_price(
+        self, security: str, current_dt: datetime, fq_mode: str
+    ) -> Optional[float]:
         """根据时间窗口解析撮合的基准价。
         - 09:25-09:30: 当日未复权开盘价
         - 09:31-15:00: 当前分钟未复权收盘价
@@ -1363,43 +1520,45 @@ class BacktestEngine:
                 dfp = api_get_price(
                     security=security,
                     end_date=current_dt,
-                    frequency='daily',
-                    fields=['open'],
+                    frequency="daily",
+                    fields=["open"],
                     count=1,
-                    fq=fq_mode
+                    fq=fq_mode,
                 )
                 if not dfp.empty:
                     rowp = dfp.iloc[-1]
-                    return float(rowp.get('open') or 0.0)
+                    return float(rowp.get("open") or 0.0)
             elif t and (Time(9, 31) <= t < Time(15, 0)):
                 dfp = api_get_price(
                     security=security,
                     end_date=current_dt,
-                    frequency='minute',
-                    fields=['close'],
+                    frequency="minute",
+                    fields=["close"],
                     count=1,
-                    fq=fq_mode
+                    fq=fq_mode,
                 )
                 if not dfp.empty:
                     rowp = dfp.iloc[-1]
-                    return float(rowp.get('close') or 0.0)
+                    return float(rowp.get("close") or 0.0)
             else:
                 dfp = api_get_price(
                     security=security,
                     end_date=current_dt,
-                    frequency='daily',
-                    fields=['close'],
+                    frequency="daily",
+                    fields=["close"],
                     count=1,
-                    fq=fq_mode
+                    fq=fq_mode,
                 )
                 if not dfp.empty:
                     rowp = dfp.iloc[-1]
-                    return float(rowp.get('close') or 0.0)
+                    return float(rowp.get("close") or 0.0)
         except Exception:
             return None
         return None
 
-    def _load_corporate_actions(self, code: str, start_date: datetime.date, end_date: datetime.date) -> List[Dict[str, Any]]:
+    def _load_corporate_actions(
+        self, code: str, start_date: datetime.date, end_date: datetime.date
+    ) -> List[Dict[str, Any]]:
         """加载标的在区间内的分红/拆分等权益事件。失败时返回空列表。"""
         try:
             from ..data.api import get_split_dividend
@@ -1419,53 +1578,55 @@ class BacktestEngine:
 
     def _is_security_paused_on_date(self, security: str, check_date: datetime.date) -> bool:
         """检查标的在指定日期是否停牌。
-        
+
         用于判断除权日当天是否停牌，如果停牌则需延迟到复牌日处理。
-        
+
         兼容 JQData 和 QMT 两种数据源：
         - JQData: 停牌日有数据，paused=1, volume=0
         - QMT: 停牌日无数据，返回前一天数据
-        
+
         注意：此函数直接调用 provider.get_price，绕过 avoid_future_data 限制，
         因为停牌状态是元数据，不是策略交易信号。
         """
         try:
             from datetime import timedelta
             from bullet_trade.data import api as data_api
-            
+
             # 直接调用 provider 的 get_price，绕过 api 层的 avoid_future_data 检查
             # 这是因为停牌判断是元数据，不应受回测模式限制
             provider = data_api._provider
-            
+
             # 获取 check_date 前后的数据
             start = check_date - timedelta(days=5)
             end = check_date + timedelta(days=1)  # 多取一天确保包含 check_date
-            
+
             df = provider.get_price(
                 security=security,
                 start_date=datetime.combine(start, Time(0, 0)),
                 end_date=datetime.combine(end, Time(15, 0)),
-                frequency='daily',
-                fields=['volume', 'paused'],
-                fq='none',
-                skip_paused=False  # 重要：不跳过停牌日，否则无法判断
+                frequency="daily",
+                fields=["volume", "paused"],
+                fq="none",
+                skip_paused=False,  # 重要：不跳过停牌日，否则无法判断
             )
-            
+
             if df.empty:
                 log.debug(f"{security} 在 {check_date} 附近无数据")
                 return False  # 无法判断，不阻断
-            
+
             # 获取 df 中所有日期
             dates_in_df = []
             for idx in df.index:
-                if hasattr(idx, 'date'):
+                if hasattr(idx, "date"):
                     dates_in_df.append(idx.date())
-                elif hasattr(idx, 'to_pydatetime'):
+                elif hasattr(idx, "to_pydatetime"):
                     dates_in_df.append(idx.to_pydatetime().date())
             dates_in_df = sorted(dates_in_df)
-            
-            log.debug(f"{security} 停牌检测: check_date={check_date}, df日期={dates_in_df[-5:] if len(dates_in_df) > 5 else dates_in_df}")
-            
+
+            log.debug(
+                f"{security} 停牌检测: check_date={check_date}, df日期={dates_in_df[-5:] if len(dates_in_df) > 5 else dates_in_df}"
+            )
+
             # 检查 check_date 是否在数据中
             if check_date not in dates_in_df:
                 # 数据中没有 check_date（QMT行为），判定为停牌
@@ -1476,24 +1637,28 @@ class BacktestEngine:
                 else:
                     log.debug(f"{security} 在 {check_date} 无数据，数据范围不足，无法判断")
                     return False
-            
+
             # check_date 在数据中（JQData行为），检查 paused/volume 字段
             for idx in df.index:
-                idx_date = idx.date() if hasattr(idx, 'date') else idx.to_pydatetime().date()
+                idx_date = idx.date() if hasattr(idx, "date") else idx.to_pydatetime().date()
                 if idx_date == check_date:
                     row = df.loc[idx]
                     # 优先使用 paused 字段
-                    if 'paused' in row and pd.notna(row['paused']):
-                        is_paused = bool(row['paused'])
-                        log.debug(f"{security} 在 {check_date} paused={row['paused']}，停牌={is_paused}")
+                    if "paused" in row and pd.notna(row["paused"]):
+                        is_paused = bool(row["paused"])
+                        log.debug(
+                            f"{security} 在 {check_date} paused={row['paused']}，停牌={is_paused}"
+                        )
                         return is_paused
                     # 其次用成交量判断
-                    if 'volume' in row:
-                        is_paused = float(row['volume'] or 0) == 0
-                        log.debug(f"{security} 在 {check_date} volume={row['volume']}，停牌={is_paused}")
+                    if "volume" in row:
+                        is_paused = float(row["volume"] or 0) == 0
+                        log.debug(
+                            f"{security} 在 {check_date} volume={row['volume']}，停牌={is_paused}"
+                        )
                         return is_paused
                     break
-            
+
             return False
         except Exception as e:
             log.debug(f"检查 {security} 停牌状态失败: {e}")
@@ -1504,21 +1669,23 @@ class BacktestEngine:
         orders = get_order_queue()
         if not orders:
             return
-        
+
         log.info(f"处理 {len(orders)} 个订单")
-        
+
         settings = get_settings()
-        
+
         # 获取当前行情数据容器（延迟加载）
         from ..data.api import get_current_data
+
         current_data = get_current_data()
-        
+
         # 目标类订单预处理：若同一标的存在目标订单，取消其之前未完成订单，避免重复与超额
         try:
             last_target_index: Dict[str, int] = {}
             for idx, o in enumerate(orders):
-                is_target = (hasattr(o, '_is_target_amount') and getattr(o, '_is_target_amount')) or \
-                            (hasattr(o, '_is_target_value') and getattr(o, '_is_target_value'))
+                is_target = (
+                    hasattr(o, "_is_target_amount") and getattr(o, "_is_target_amount")
+                ) or (hasattr(o, "_is_target_value") and getattr(o, "_is_target_value"))
                 if is_target:
                     last_target_index[o.security] = idx
             if last_target_index:
@@ -1528,14 +1695,16 @@ class BacktestEngine:
                         # 取消旧订单
                         if o.status == OrderStatus.open:
                             o.status = OrderStatus.canceled
-                            log.info(f"因目标下单，取消未完成订单: {o.security}, 订单ID {o.order_id}")
+                            log.info(
+                                f"因目标下单，取消未完成订单: {o.security}, 订单ID {o.order_id}"
+                            )
                         continue
                     new_orders.append(o)
                 orders = new_orders
         except Exception as ex:
             log.debug(f"目标订单预处理失败: {ex}")
-        use_real_price = bool(settings.options.get('use_real_price'))
-        fq_mode = 'pre' if use_real_price else 'none'
+        use_real_price = bool(settings.options.get("use_real_price"))
+        fq_mode = "pre" if use_real_price else "none"
 
         for order in orders:
             try:
@@ -1544,7 +1713,7 @@ class BacktestEngine:
                     log.warning(f"无法获取 {order.security} 的行情数据")
                     order.status = OrderStatus.rejected
                     continue
-                
+
                 security_data = current_data[order.security]
                 try:
                     sec_info = get_security_info(order.security)
@@ -1555,28 +1724,32 @@ class BacktestEngine:
                     log.warning(f"{order.security} 停牌，订单取消")
                     order.status = OrderStatus.canceled
                     continue
-                
+
                 # 解析执行价基准（封装逻辑便于维护与测试）
                 current_dt = self.context.current_dt
                 base_exec_price = self._resolve_base_exec_price(order.security, current_dt, fq_mode)
 
-                current_price = float(base_exec_price) if base_exec_price and base_exec_price > 0 else security_data.last_price
+                current_price = (
+                    float(base_exec_price)
+                    if base_exec_price and base_exec_price > 0
+                    else security_data.last_price
+                )
                 if current_price <= 0:
                     log.warning(f"{order.security} 价格无效: {current_price}")
                     order.status = OrderStatus.rejected
                     continue
-                
+
                 # 计算下单数量（普通/目标/价值）——使用 current_price 作为金额换算基准
                 amount = self._calculate_order_amount(order, current_price)
                 if amount == 0:
                     log.debug(f"{order.security} 无需交易")
                     order.status = OrderStatus.canceled
                     continue
-                
+
                 # 先按方向取绝对值，后续统一为正数处理
-                is_buy = (amount > 0)
+                is_buy = amount > 0
                 intended_amount = abs(amount)
-                
+
                 style_obj = getattr(order, "style", None)
                 trade_price: Optional[float] = None
                 limit_price: Optional[float] = None
@@ -1607,26 +1780,36 @@ class BacktestEngine:
                 if trade_price is None:
                     info = get_security_info(order.security)
                     category = self._infer_security_category(order.security, info)
-                    if category == 'money_market_fund':
+                    if category == "money_market_fund":
                         trade_price = current_price
                     else:
-                        trade_price = self._apply_slippage_price(current_price, is_buy, order.security)
+                        trade_price = self._apply_slippage_price(
+                            current_price, is_buy, order.security
+                        )
 
                 trade_price = self._round_to_tick(trade_price, order.security, is_buy=None)
-                
+
                 # 根据证券分类确定价格精度：stock=2位小数，fund/money_market_fund=3位小数
-                price_decimals = 2 if security_category == 'stock' else 3
+                price_decimals = 2 if security_category == "stock" else 3
 
                 if limit_price is not None:
                     if is_buy and trade_price - limit_price > 1e-9:
-                        log.info(f"{order.security} 撮合价 {trade_price:.{price_decimals}f} 超出买入限价 {limit_price:.{price_decimals}f}，取消订单")
+                        log.info(
+                            f"{order.security} 撮合价 {trade_price:.{price_decimals}f} 超出买入限价 {limit_price:.{price_decimals}f}，取消订单"
+                        )
                         order.status = OrderStatus.canceled
                         continue
                     if (not is_buy) and limit_price - trade_price > 1e-9:
-                        log.info(f"{order.security} 撮合价 {trade_price:.{price_decimals}f} 低于卖出限价 {limit_price:.{price_decimals}f}，取消订单")
+                        log.info(
+                            f"{order.security} 撮合价 {trade_price:.{price_decimals}f} 低于卖出限价 {limit_price:.{price_decimals}f}，取消订单"
+                        )
                         order.status = OrderStatus.canceled
                         continue
-                if isinstance(style_obj, MarketOrderStyle) and limit_price is not None and security_category == 'stock':
+                if (
+                    isinstance(style_obj, MarketOrderStyle)
+                    and limit_price is not None
+                    and security_category == "stock"
+                ):
                     # 市价单的保护价仅用于限价保护与资金检查，成交价仍按滑点撮合
                     pass
 
@@ -1634,10 +1817,10 @@ class BacktestEngine:
                 final_amount = intended_amount
                 min_trade_size = 100  # A股一手
                 min_order_amount = 100
-                
+
                 # 资金检查价格：若存在限价/保护价则按限价锁资，否则按撮合价
                 fund_check_price = limit_price if limit_price is not None else trade_price
-                
+
                 # 费用参数
                 order_cost_config = self._get_order_cost_config(order.security)
                 if order_cost_config:
@@ -1652,15 +1835,20 @@ class BacktestEngine:
                     close_comm_rate = 0.0003
                     close_tax_rate = 0.001
                     min_commission = 5.0
-                
+
                 if is_buy:
                     # 买入：计算可下单量上限，考虑最小佣金与锁定资金
-                    available_for_buy = max(0.0, self.context.portfolio.available_cash - self.context.portfolio.locked_cash)
+                    available_for_buy = max(
+                        0.0,
+                        self.context.portfolio.available_cash - self.context.portfolio.locked_cash,
+                    )
                     effective_cash = max(0.0, available_for_buy - min_commission)
                     denom = fund_check_price * (1.0 + open_comm_rate + open_tax_rate)
                     aval_amount = int(effective_cash // denom) if denom > 0 else 0
                     if aval_amount <= 0:
-                        log.warning(f"{order.security} 资金不足，最小费用后可用现金为 {effective_cash:.2f}")
+                        log.warning(
+                            f"{order.security} 资金不足，最小费用后可用现金为 {effective_cash:.2f}"
+                        )
                         order.status = OrderStatus.rejected
                         continue
                     if aval_amount < final_amount:
@@ -1676,17 +1864,17 @@ class BacktestEngine:
                     if final_amount > pos.closeable_amount:
                         log.info(f"{order.security} 可卖出不足，缩量为 {pos.closeable_amount}")
                         final_amount = pos.closeable_amount
-                
+
                 # 一手取整 + 最小申报量
                 final_amount = (final_amount // min_trade_size) * min_trade_size
                 if final_amount < min_order_amount:
                     log.debug(f"{order.security} 数量不足最小申报量({min_order_amount})")
                     order.status = OrderStatus.canceled
                     continue
-                
+
                 trade_amount = final_amount
                 trade_value = trade_price * trade_amount
-                
+
                 # 计算交易费用（含最小佣金）
                 if is_buy:
                     commission = max(trade_value * open_comm_rate, min_commission)
@@ -1698,47 +1886,57 @@ class BacktestEngine:
                 commission = self._round_half_up(commission, 2)
                 tax = self._round_half_up(tax, 2)
                 total_cost = self._round_half_up(trade_value + commission + tax, 2)
-                
+
                 if is_buy:
                     # 委托时锁定资金（含费用）
                     self.context.portfolio.locked_cash += total_cost
                     if total_cost > (self.context.portfolio.available_cash):
                         # 双重保障：若仍不足则拒绝并回滚锁定
-                        log.warning(f"{order.security} 资金不足: 需要 {total_cost:.2f}, 可用 {self.context.portfolio.available_cash:.2f}")
+                        log.warning(
+                            f"{order.security} 资金不足: 需要 {total_cost:.2f}, 可用 {self.context.portfolio.available_cash:.2f}"
+                        )
                         self.context.portfolio.locked_cash -= total_cost
                         order.status = OrderStatus.rejected
                         continue
                     # 扣除资金并释放锁定
                     self.context.portfolio.available_cash -= total_cost
                     self.context.portfolio.locked_cash -= total_cost
-                    
+
                     # 更新持仓
                     if order.security not in self.context.portfolio.positions:
-                        self.context.portfolio.positions[order.security] = Position(security=order.security)
+                        self.context.portfolio.positions[order.security] = Position(
+                            security=order.security
+                        )
                     position = self.context.portfolio.positions[order.security]
                     position.update_position(trade_amount, trade_price)
                     # T+ 规则：若 tplus=1，将当日买入计入锁定，并从可卖数量中抵消同额增量
                     tplus = self._infer_tplus_from_info(info)
                     if tplus == 1:
                         # today_buy_t1 仅记录当日买入；抵消 update_position 对 closeable 的递增
-                        position.today_buy_t1 = getattr(position, 'today_buy_t1', 0) + trade_amount
+                        position.today_buy_t1 = getattr(position, "today_buy_t1", 0) + trade_amount
                         position.closeable_amount = max(0, position.closeable_amount - trade_amount)
                     position.update_price(current_price)
-                    log.info(f"买入 {order.security}: {trade_amount} 股, 委托价 {fund_check_price:.{price_decimals}f}, 成交价 {trade_price:.{price_decimals}f}, 费用 {commission+tax:.2f}")
+                    log.info(
+                        f"买入 {order.security}: {trade_amount} 股, 委托价 {fund_check_price:.{price_decimals}f}, 成交价 {trade_price:.{price_decimals}f}, 费用 {commission+tax:.2f}"
+                    )
                 else:
                     # 卖出：检查并执行
                     position = self.context.portfolio.positions[order.security]
                     # 增加资金（卖出释放资金，不需锁定）
-                    self.context.portfolio.available_cash += self._round_half_up((trade_value - commission - tax), 2)
-                    
+                    self.context.portfolio.available_cash += self._round_half_up(
+                        (trade_value - commission - tax), 2
+                    )
+
                     # 更新持仓
                     position.update_position(-trade_amount, trade_price)
                     if position.total_amount == 0:
                         del self.context.portfolio.positions[order.security]
                     else:
                         position.update_price(current_price)
-                    log.info(f"卖出 {order.security}: {trade_amount} 股, 成交价 {trade_price:.{price_decimals}f}, 费用 {commission+tax:.2f}")
-                
+                    log.info(
+                        f"卖出 {order.security}: {trade_amount} 股, 成交价 {trade_price:.{price_decimals}f}, 费用 {commission+tax:.2f}"
+                    )
+
                 # 记录交易
                 trade = Trade(
                     order_id=order.order_id,
@@ -1747,62 +1945,71 @@ class BacktestEngine:
                     price=trade_price,
                     time=current_dt,
                     commission=commission,
-                    tax=tax
+                    tax=tax,
                 )
                 self.trades.append(trade)
-                
+
                 # 标记订单完成
                 order.price = trade_price
                 order.amount = trade_amount if is_buy else -trade_amount
                 order.status = OrderStatus.filled
                 order.filled = trade_amount
-                
+
             except Exception as e:
                 log.error(f"处理订单失败: {order.security}, 错误: {e}")
                 order.status = OrderStatus.rejected
-        
+
         # 清空订单队列
         clear_order_queue()
-        
+
         # 更新账户价值
         self.context.portfolio.update_value()
-    
+
     def _calculate_order_amount(self, order, current_price: float) -> int:
         """计算订单实际数量"""
         # 普通订单
-        if not hasattr(order, '_target_amount') and not hasattr(order, '_target_value') and not hasattr(order, '_is_target_amount') and not hasattr(order, '_is_target_value'):
+        if (
+            not hasattr(order, "_target_amount")
+            and not hasattr(order, "_target_value")
+            and not hasattr(order, "_is_target_amount")
+            and not hasattr(order, "_is_target_value")
+        ):
             return order.amount if order.is_buy else -order.amount
-        
+
         # 目标数量订单
-        if hasattr(order, '_is_target_amount') and order._is_target_amount:
+        if hasattr(order, "_is_target_amount") and order._is_target_amount:
             target = order._target_amount
             current = 0
             if order.security in self.context.portfolio.positions:
                 current = self.context.portfolio.positions[order.security].total_amount
             return target - current
-        
+
         # 目标价值订单
-        if hasattr(order, '_is_target_value') and order._is_target_value:
+        if hasattr(order, "_is_target_value") and order._is_target_value:
             target_value = order._target_value
             current_value = 0
             if order.security in self.context.portfolio.positions:
                 position = self.context.portfolio.positions[order.security]
                 current_value = position.total_amount * current_price
-            
+
             diff_value = target_value - current_value
             return int(diff_value / current_price)
-        
+
         # 按价值订单
-        if hasattr(order, '_target_value'):
-            return int(order._target_value / current_price) if order.is_buy else -int(order._target_value / current_price)
-        
+        if hasattr(order, "_target_value"):
+            return (
+                int(order._target_value / current_price)
+                if order.is_buy
+                else -int(order._target_value / current_price)
+            )
+
         return order.amount if order.is_buy else -order.amount
-    
+
     def _update_positions(self):
         """更新持仓价格（使用收盘价）"""
         if not self.context.portfolio.positions:
             return
-        
+
         securities = list(self.context.portfolio.positions.keys())
         try:
             # 获取多个标的的收盘价
@@ -1810,16 +2017,16 @@ class BacktestEngine:
             df = api_get_price(
                 security=securities,
                 end_date=self.context.current_dt,
-                frequency='daily',
-                fields=['close'],
+                frequency="daily",
+                fields=["close"],
                 count=1,
-                fq='none'
+                fq="none",
             )
-            
+
             if not df.empty:
                 # 取最后一行（最新数据）
                 last_row = df.iloc[-1]
-                
+
                 # 更新每个标的的价格
                 for security in securities:
                     try:
@@ -1827,37 +2034,51 @@ class BacktestEngine:
                         # 对于多个字段，列名是MultiIndex
                         if security in df.columns:
                             close_price = last_row[security]
-                        elif ('close', security) in df.columns:
+                        elif ("close", security) in df.columns:
                             # MultiIndex格式
-                            close_price = last_row[('close', security)]
+                            close_price = last_row[("close", security)]
                         else:
                             continue
-                        
+
                         if pd.notna(close_price) and close_price > 0:
-                            self.context.portfolio.positions[security].update_price(float(close_price))
+                            self.context.portfolio.positions[security].update_price(
+                                float(close_price)
+                            )
                     except Exception as e:
                         log.debug(f"更新{security}价格失败: {e}")
         except Exception as e:
             log.debug(f"更新持仓价格失败: {e}")
-        
+
         self.context.portfolio.update_value()
-    
+
     def _record_daily(self):
         """记录每日数据"""
         portfolio = self.context.portfolio
-        
+
         record = {
-            'date': self.context.current_dt,
-            'total_value': portfolio.total_value,
-            'cash': portfolio.available_cash,
-            'positions_value': portfolio.positions_value,
-            'returns': portfolio.total_value - (self.start_total_value if self.start_total_value is not None else self.initial_cash),
-            'returns_pct': (portfolio.total_value / (self.start_total_value if self.start_total_value is not None else self.initial_cash) - 1) * 100,
+            "date": self.context.current_dt,
+            "total_value": portfolio.total_value,
+            "cash": portfolio.available_cash,
+            "positions_value": portfolio.positions_value,
+            "returns": portfolio.total_value
+            - (self.start_total_value if self.start_total_value is not None else self.initial_cash),
+            "returns_pct": (
+                portfolio.total_value
+                / (
+                    self.start_total_value
+                    if self.start_total_value is not None
+                    else self.initial_cash
+                )
+                - 1
+            )
+            * 100,
         }
-        
+
         self.daily_records.append(record)
-        
-        log.info(f"账户总值: {portfolio.total_value:,.2f}, 现金: {portfolio.available_cash:,.2f}, 持仓市值: {portfolio.positions_value:,.2f}")
+
+        log.info(
+            f"账户总值: {portfolio.total_value:,.2f}, 现金: {portfolio.available_cash:,.2f}, 持仓市值: {portfolio.positions_value:,.2f}"
+        )
         log.info(f"累计收益率: {record['returns_pct']:.2f}%")
 
     # 新增：记录每日持仓快照（在更新收盘价后调用）
@@ -1865,125 +2086,148 @@ class BacktestEngine:
         portfolio = self.context.portfolio
         current_dt = self.context.current_dt
         for code, pos in portfolio.positions.items():
-            self.daily_positions.append({
-                'date': current_dt,
-                'code': code,
-                'amount': pos.total_amount,
-                'closeable_amount': pos.closeable_amount,
-                'avg_cost': pos.avg_cost,
-                'acc_avg_cost': pos.acc_avg_cost,
-                'price': pos.price,
-                'value': pos.value,
-            })
-
+            self.daily_positions.append(
+                {
+                    "date": current_dt,
+                    "code": code,
+                    "amount": pos.total_amount,
+                    "closeable_amount": pos.closeable_amount,
+                    "avg_cost": pos.avg_cost,
+                    "acc_avg_cost": pos.acc_avg_cost,
+                    "price": pos.price,
+                    "value": pos.value,
+                }
+            )
 
     def _load_benchmark_data(self, benchmark: str):
         """
         加载基准数据
-        
+
         注意：直接使用原始 jq.get_price，不经过包装函数，
         因为基准数据是预加载整个回测期间的数据，不需要未来数据检测
         """
         try:
             log.info(f"加载基准数据: {benchmark}")
-            
+
             # 通过当前数据提供者直接获取（不经过包装，避免未来数据检测），一次性加载全区间收盘价
             provider = get_data_provider()
             self.benchmark_data = provider.get_price(
                 security=benchmark,
                 start_date=self.start_date,
                 end_date=self.end_date,
-                frequency='daily',
-                fields=['close']
+                frequency="daily",
+                fields=["close"],
             )
         except Exception as e:
             log.warning(f"加载基准数据失败: {e}")
-    
+
     def _generate_empty_results(self) -> Dict[str, Any]:
         """生成空回测结果（没有交易日的情况）"""
         results = {
-            'summary': {
-                '策略收益': '0.00%',
-                '策略年化收益': '0.00%',
-                '最大回撤': '0.00%',
-                '夏普比率': '0.00',
-                '日胜率': '0.00%',
-                '交易胜率': '0.00%',
-                '交易天数': 0,
-                '初始资金': f'{self.initial_cash:,.2f}',
-                '最终资金': f'{self.initial_cash:,.2f}',
+            "summary": {
+                "策略收益": "0.00%",
+                "策略年化收益": "0.00%",
+                "最大回撤": "0.00%",
+                "夏普比率": "0.00",
+                "日胜率": "0.00%",
+                "交易胜率": "0.00%",
+                "交易天数": 0,
+                "初始资金": f"{self.initial_cash:,.2f}",
+                "最终资金": f"{self.initial_cash:,.2f}",
             },
-            'daily_records': pd.DataFrame(columns=['date', 'total_value', 'cash', 'position_value', 'daily_returns']).set_index('date'),
-            'trades': [],
-            'events': [],
-            'daily_positions': pd.DataFrame(columns=['date','code','amount','closeable_amount','avg_cost','acc_avg_cost','price','value']),
-            'custom_plot': None,
-            'meta': {
-                'strategy_file': self.strategy_file,
-                'start_date': self.start_date.strftime('%Y-%m-%d'),
-                'end_date': self.end_date.strftime('%Y-%m-%d'),
-                'algorithm_id': self.algorithm_id,
-                'extras': self.extras,
-                'runtime_seconds': getattr(self, 'runtime_seconds', 0.0),
-                'initial_total_value': float(self.initial_cash),
-                'final_total_value': float(self.initial_cash),
-            }
+            "daily_records": pd.DataFrame(
+                columns=["date", "total_value", "cash", "position_value", "daily_returns"]
+            ).set_index("date"),
+            "trades": [],
+            "events": [],
+            "daily_positions": pd.DataFrame(
+                columns=[
+                    "date",
+                    "code",
+                    "amount",
+                    "closeable_amount",
+                    "avg_cost",
+                    "acc_avg_cost",
+                    "price",
+                    "value",
+                ]
+            ),
+            "custom_plot": None,
+            "meta": {
+                "strategy_file": self.strategy_file,
+                "start_date": self.start_date.strftime("%Y-%m-%d"),
+                "end_date": self.end_date.strftime("%Y-%m-%d"),
+                "algorithm_id": self.algorithm_id,
+                "extras": self.extras,
+                "runtime_seconds": getattr(self, "runtime_seconds", 0.0),
+                "initial_total_value": float(self.initial_cash),
+                "final_total_value": float(self.initial_cash),
+            },
         }
-        
+
         # 打印摘要
         log.info("\n" + "=" * 60)
         log.info("回测结果摘要（无交易日）")
         log.info("=" * 60)
-        for key, value in results['summary'].items():
+        for key, value in results["summary"].items():
             log.info(f"{key}: {value}")
         log.info("=" * 60)
-        
+
         return results
-    
+
     def _generate_results(self) -> Dict[str, Any]:
         """生成回测结果"""
         df = pd.DataFrame(self.daily_records)
-        
+
         # 检查是否有数据
-        if df.empty or 'date' not in df.columns:
+        if df.empty or "date" not in df.columns:
             log.warning("没有回测数据，返回空结果")
             return self._generate_empty_results()
-        
-        df.set_index('date', inplace=True)
-        
+
+        df.set_index("date", inplace=True)
+
         # 计算日收益率
-        df['daily_returns'] = df['total_value'].pct_change()
-        
+        df["daily_returns"] = df["total_value"].pct_change()
+
         # 基本统计
-        total_returns = (df['total_value'].iloc[-1] / self.initial_cash - 1) * 100
+        total_returns = (df["total_value"].iloc[-1] / self.initial_cash - 1) * 100
         trading_days = len(df)
         years = trading_days / 250
-        annual_returns = (pow(df['total_value'].iloc[-1] / self.initial_cash, 1/years) - 1) * 100 if years > 0 else 0
-        
+        annual_returns = (
+            (pow(df["total_value"].iloc[-1] / self.initial_cash, 1 / years) - 1) * 100
+            if years > 0
+            else 0
+        )
+
         # 最大回撤
-        cummax = df['total_value'].expanding().max()
-        drawdown = (df['total_value'] - cummax) / cummax * 100
+        cummax = df["total_value"].expanding().max()
+        drawdown = (df["total_value"] - cummax) / cummax * 100
         max_drawdown = drawdown.min()
-        
+
         # 夏普比率（假设无风险利率为3%）
         risk_free_rate = 0.03 / 250
-        excess_returns = df['daily_returns'] - risk_free_rate
-        sharpe_ratio = np.sqrt(250) * excess_returns.mean() / excess_returns.std() if excess_returns.std() > 0 else 0
-        
+        excess_returns = df["daily_returns"] - risk_free_rate
+        sharpe_ratio = (
+            np.sqrt(250) * excess_returns.mean() / excess_returns.std()
+            if excess_returns.std() > 0
+            else 0
+        )
+
         # 日胜率（仅作为摘要展示，完整指标在 analysis.calculate_metrics）
-        winning_days = (df['daily_returns'] > 0).sum()
+        winning_days = (df["daily_returns"] > 0).sum()
         win_rate_daily = winning_days / trading_days * 100 if trading_days > 0 else 0
 
         # 交易胜率（基于卖出回合）
         try:
             from .analysis import _compute_trade_win_stats
+
             trade_stats = _compute_trade_win_stats(self.trades)
         except Exception:
-            trade_stats = {'交易胜率': 0.0}
+            trade_stats = {"交易胜率": 0.0}
 
         # 构建自定义绘图数据（优先使用 g.custom_plot，其次聚合 record() 收集的序列）
-        custom_plot_obj = getattr(g, 'custom_plot', None)
-        if custom_plot_obj is None and hasattr(g, 'record_series') and g.record_series:
+        custom_plot_obj = getattr(g, "custom_plot", None)
+        if custom_plot_obj is None and hasattr(g, "record_series") and g.record_series:
             try:
                 series_map = {}
                 for key, items in g.record_series.items():
@@ -1997,45 +2241,64 @@ class BacktestEngine:
                 if series_map:
                     custom_plot_obj = pd.DataFrame(series_map).sort_index()
             except Exception as e:
-                log.warning(f'构建自定义图数据失败: {e}')
-        
+                log.warning(f"构建自定义图数据失败: {e}")
+
         results = {
-            'summary': {
-                '策略收益': f'{total_returns:.2f}%',
-                '策略年化收益': f'{annual_returns:.2f}%',
-                '最大回撤': f'{max_drawdown:.2f}%',
-                '夏普比率': f'{sharpe_ratio:.2f}',
-                '日胜率': f'{win_rate_daily:.2f}%',
-                '交易胜率': f"{float(trade_stats.get('交易胜率', 0.0)):.2f}%",
-                '交易天数': trading_days,
-                '初始资金': f'{(self.start_total_value if self.start_total_value is not None else self.initial_cash):,.2f}',
-                '最终资金': f'{df["total_value"].iloc[-1]:,.2f}',
+            "summary": {
+                "策略收益": f"{total_returns:.2f}%",
+                "策略年化收益": f"{annual_returns:.2f}%",
+                "最大回撤": f"{max_drawdown:.2f}%",
+                "夏普比率": f"{sharpe_ratio:.2f}",
+                "日胜率": f"{win_rate_daily:.2f}%",
+                "交易胜率": f"{float(trade_stats.get('交易胜率', 0.0)):.2f}%",
+                "交易天数": trading_days,
+                "初始资金": f"{(self.start_total_value if self.start_total_value is not None else self.initial_cash):,.2f}",
+                "最终资金": f'{df["total_value"].iloc[-1]:,.2f}',
             },
-            'daily_records': df,
-            'trades': self.trades,
-            'events': self.events,
-            'daily_positions': pd.DataFrame(self.daily_positions) if self.daily_positions else pd.DataFrame(columns=['date','code','amount','closeable_amount','avg_cost','acc_avg_cost','price','value']),
-            'custom_plot': custom_plot_obj,
-            'meta': {
-                'strategy_file': self.strategy_file,
-                'start_date': self.start_date.strftime('%Y-%m-%d'),
-                'end_date': self.end_date.strftime('%Y-%m-%d'),
-                'algorithm_id': self.algorithm_id,
-                'extras': self.extras,
-                'runtime_seconds': self.runtime_seconds,
-                'initial_total_value': float(self.start_total_value if self.start_total_value is not None else self.initial_cash),
-                'final_total_value': float(df['total_value'].iloc[-1] if len(df) > 0 else 0.0),
-            }
+            "daily_records": df,
+            "trades": self.trades,
+            "events": self.events,
+            "daily_positions": (
+                pd.DataFrame(self.daily_positions)
+                if self.daily_positions
+                else pd.DataFrame(
+                    columns=[
+                        "date",
+                        "code",
+                        "amount",
+                        "closeable_amount",
+                        "avg_cost",
+                        "acc_avg_cost",
+                        "price",
+                        "value",
+                    ]
+                )
+            ),
+            "custom_plot": custom_plot_obj,
+            "meta": {
+                "strategy_file": self.strategy_file,
+                "start_date": self.start_date.strftime("%Y-%m-%d"),
+                "end_date": self.end_date.strftime("%Y-%m-%d"),
+                "algorithm_id": self.algorithm_id,
+                "extras": self.extras,
+                "runtime_seconds": self.runtime_seconds,
+                "initial_total_value": float(
+                    self.start_total_value
+                    if self.start_total_value is not None
+                    else self.initial_cash
+                ),
+                "final_total_value": float(df["total_value"].iloc[-1] if len(df) > 0 else 0.0),
+            },
         }
-        
+
         # 打印摘要
         log.info("\n" + "=" * 60)
         log.info("回测结果摘要")
         log.info("=" * 60)
-        for key, value in results['summary'].items():
+        for key, value in results["summary"].items():
             log.info(f"{key}: {value}")
         log.info("=" * 60)
-        
+
         return results
 
 
@@ -2043,7 +2306,7 @@ def create_backtest(
     strategy_file: str,
     start_date: str,
     end_date: str,
-    frequency: str = 'day',
+    frequency: str = "day",
     initial_cash: float = 100000,
     benchmark: Optional[str] = None,
     log_file: Optional[str] = None,
@@ -2053,7 +2316,7 @@ def create_backtest(
 ) -> Dict[str, Any]:
     """
     创建并运行回测
-    
+
     Args:
         strategy_file: 策略文件路径
         start_date: 回测开始日期 'YYYY-MM-DD'
@@ -2078,11 +2341,11 @@ def create_backtest(
         initial_positions=initial_positions,
         algorithm_id=algorithm_id,
     )
-    
+
     return engine.run()
 
 
-__all__ = ['BacktestEngine', 'create_backtest']
+__all__ = ["BacktestEngine", "create_backtest"]
 
 
 # 新增：应用初始持仓（辅助方法）
@@ -2092,20 +2355,22 @@ def _safe_last_close(df: pd.DataFrame, code: str) -> Optional[float]:
             return None
         last_row = df.iloc[-1]
         # 支持三种列结构：['close'], [code], [('close', code)]
-        if 'close' in df.columns:
-            val = last_row['close']
+        if "close" in df.columns:
+            val = last_row["close"]
         elif code in df.columns:
             val = last_row[code]
-        elif ('close', code) in df.columns:
-            val = last_row[('close', code)]
+        elif ("close", code) in df.columns:
+            val = last_row[("close", code)]
         else:
             return None
         return float(val) if pd.notna(val) else None
     except Exception:
         return None
 
+
 # 将方法挂到类中
 BacktestEngine._safe_last_close = staticmethod(_safe_last_close)
+
 
 def _apply_initial_positions(self):
     """根据 initial_positions 注入初始持仓，不消耗现金。"""
@@ -2116,19 +2381,19 @@ def _apply_initial_positions(self):
         portfolio = self.context.portfolio
         for item in self.initial_positions:
             try:
-                code = str(item.get('security'))
-                amount = int(item.get('amount') or 0)
-                avg_cost = item.get('avg_cost')
+                code = str(item.get("security"))
+                amount = int(item.get("amount") or 0)
+                avg_cost = item.get("avg_cost")
                 if amount <= 0 or not code:
                     continue
                 # 获取起始日前的/当日收盘价作为估值价格
                 df = provider.get_price(
                     security=code,
                     end_date=self.start_date,
-                    frequency='daily',
-                    fields=['close'],
+                    frequency="daily",
+                    fields=["close"],
                     count=1,
-                    fq='pre'
+                    fq="pre",
                 )
                 close_price = self._safe_last_close(df, code)
                 if close_price is None:
@@ -2151,6 +2416,7 @@ def _apply_initial_positions(self):
         portfolio.update_value()
     except Exception as e:
         log.warning(f"应用初始持仓失败: {e}")
+
 
 # 绑定到类
 BacktestEngine._apply_initial_positions = _apply_initial_positions

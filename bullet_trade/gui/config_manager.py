@@ -70,6 +70,10 @@ class ConfigManager:
             "log_level": "INFO",
             "runtime_dir": "./runtime",
             "debug": False,
+            # API服务器配置
+            "api_server_host": "127.0.0.1",
+            "api_server_port": 3000,
+            "api_server_ssl": False,
         }
 
     def save(self):
@@ -127,6 +131,9 @@ class ConfigManager:
             "log_level": "LOG_LEVEL",
             "runtime_dir": "RUNTIME_DIR",
             "debug": "DEBUG",
+            "api_server_host": "API_SERVER_HOST",
+            "api_server_port": "API_SERVER_PORT",
+            "api_server_ssl": "API_SERVER_SSL",
         }
 
         for config_key, env_key in env_mapping.items():

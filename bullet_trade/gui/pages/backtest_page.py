@@ -215,6 +215,9 @@ class BacktestPage(QWidget):
         browse_btn = QPushButton("浏览...")
         browse_btn.clicked.connect(self._browse_strategy_file)
         strategy_layout.addWidget(browse_btn)
+        select_remote_btn = QPushButton("从远端选择...")
+        select_remote_btn.clicked.connect(self._open_remote_selector)
+        strategy_layout.addWidget(select_remote_btn)
         config_layout.addRow("策略文件:", strategy_layout)
 
         # 回测日期
@@ -344,6 +347,75 @@ class BacktestPage(QWidget):
         if file_path:
             self.strategy_file_edit.setText(file_path)
             self._on_strategy_file_changed()
+
+    def _open_remote_selector(self):
+        """打开远端策略选择对话框（与 StrategyPage 类似）"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("选择远端策略")
+        layout = QVBoxLayout(dlg)
+        listw = QListWidget()
+        layout.addWidget(listw)
+
+        btn_layout = QHBoxLayout()
+        refresh_btn = QPushButton("刷新")
+        select_btn = QPushButton("选择")
+        cancel_btn = QPushButton("取消")
+        btn_layout.addWidget(refresh_btn)
+        btn_layout.addWidget(select_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        def refresh():
+            listw.clear()
+            try:
+                from ..gui.config_manager import ConfigManager  # type: ignore
+            except Exception:
+                pass
+            try:
+                from ..config_manager import ConfigManager as CM  # fallback
+                cm = CM()
+                server = cm.get("strategy_server_url", None)
+                if not server:
+                    host = cm.get("qmt_server_host", "127.0.0.1")
+                    port = cm.get("qmt_server_port", 58620)
+                    server = f"http://{host}:{port}"
+                token = cm.get("qmt_server_token", "") or os.getenv("STRATEGY_API_TOKEN") or os.getenv("BT_API_TOKEN")
+            except Exception:
+                server = os.getenv("STRATEGY_SERVER_URL") or os.getenv("BT_SERVER_URL") or "http://127.0.0.1:3000"
+                token = os.getenv("STRATEGY_API_TOKEN") or os.getenv("BT_API_TOKEN")
+            url = server.rstrip("/") + "/api/strategies"
+            import requests
+            try:
+                headers = {"Accept": "application/json"}
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                resp = requests.get(url, headers=headers, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, list):
+                    for item in data:
+                        sid = item.get("id", "")
+                        name = item.get("name", "")
+                        listw.addItem(f"{sid}  {name}")
+            except Exception as e:
+                QMessageBox.warning(self, "请求失败", f"无法获取远端策略: {e}")
+
+        def select_item():
+            it = listw.currentItem()
+            if not it:
+                QMessageBox.warning(self, "提示", "请先选择一项")
+                return
+            text = it.text()
+            sid = text.split()[0]
+            remote = f"remote://{sid}"
+            self.strategy_file_edit.setText(remote)
+            dlg.accept()
+
+        refresh_btn.clicked.connect(lambda: refresh())
+        select_btn.clicked.connect(lambda: select_item())
+        cancel_btn.clicked.connect(dlg.reject)
+        refresh()
+        dlg.exec()
 
     def _on_strategy_file_changed(self):
         """策略文件改变时的处理"""

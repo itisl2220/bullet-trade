@@ -6,5 +6,7 @@ BulletTrade GUI 模块
 
 from .main_window import MainWindow
 from .app import BulletTradeApp
+from .auth_manager import AuthManager
+from .login_dialog import LoginDialog
 
-__all__ = ["MainWindow", "BulletTradeApp"]
+__all__ = ["MainWindow", "BulletTradeApp", "AuthManager", "LoginDialog"]

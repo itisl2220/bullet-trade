@@ -20,6 +20,9 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QFileDialog,
     QMessageBox,
+    QDialog,
+    QListWidget,
+    QListWidgetItem,
 )
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -80,7 +83,7 @@ class LiveWorker(QThread):
 
             gui_handler = GuiLogHandler(self.output)
             gui_handler.setLevel(logging.INFO)
-            
+
             # 只添加到 log.logger，_sync_standard_logger() 会自动同步到 bullet_trade logger
             # 检查是否已存在相同的 handler，避免重复添加
             handler_exists = any(
@@ -150,6 +153,7 @@ class LiveWorker(QThread):
             if gui_handler:
                 try:
                     from bullet_trade.core.globals import log
+
                     # 从 log.logger 移除
                     if gui_handler in log.logger.handlers:
                         log.logger.removeHandler(gui_handler)
@@ -218,6 +222,9 @@ class LivePage(QWidget):
         browse_btn = QPushButton("浏览...")
         browse_btn.clicked.connect(self._browse_strategy_file)
         strategy_layout.addWidget(browse_btn)
+        select_remote_btn = QPushButton("从远端选择...")
+        select_remote_btn.clicked.connect(self._open_remote_selector)
+        strategy_layout.addWidget(select_remote_btn)
         config_layout.addRow("策略文件:", strategy_layout)
 
         # 券商类型（默认使用模拟模式）
@@ -235,7 +242,7 @@ class LivePage(QWidget):
             # 如果找不到，默认选择simulator（索引0）
             self.broker_combo.setCurrentIndex(0)
         config_layout.addRow("券商类型:", self.broker_combo)
-        
+
         # 券商类型变化时更新提示
         self.broker_combo.currentTextChanged.connect(self._on_broker_changed)
         # 初始化时调用一次，确保警告标签正确显示
@@ -267,7 +274,7 @@ class LivePage(QWidget):
         self.params_widget = StrategyParamsWidget()
         self.params_widget.setMinimumHeight(250)  # 设置最小高度
         left_layout.addWidget(self.params_widget, 1)  # 设置拉伸因子，使其占据更多空间
-        
+
         # 当策略文件改变时，加载参数
         self.strategy_file_edit.textChanged.connect(self._on_strategy_file_changed)
 
@@ -326,7 +333,77 @@ class LivePage(QWidget):
         if file_path:
             self.strategy_file_edit.setText(file_path)
             self._on_strategy_file_changed()
-    
+
+    def _open_remote_selector(self):
+        """打开远端策略选择对话框"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("选择远端策略")
+        layout = QVBoxLayout(dlg)
+        listw = QListWidget()
+        layout.addWidget(listw)
+
+        btn_layout = QHBoxLayout()
+        refresh_btn = QPushButton("刷新")
+        select_btn = QPushButton("选择")
+        cancel_btn = QPushButton("取消")
+        btn_layout.addWidget(refresh_btn)
+        btn_layout.addWidget(select_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        def refresh():
+            listw.clear()
+            try:
+                # 优先使用显式配置的 strategy_server_url，否则使用 qmt_server_host/port
+                server = self.config_manager.get("strategy_server_url", None)
+                if not server:
+                    host = self.config_manager.get("qmt_server_host", "127.0.0.1")
+                    port = self.config_manager.get("qmt_server_port", 58620)
+                    server = f"http://{host}:{port}"
+                url = server.rstrip("/") + "/api/strategies"
+                token = (
+                    self.config_manager.get("qmt_server_token", "")
+                    or os.getenv("STRATEGY_API_TOKEN")
+                    or os.getenv("BT_API_TOKEN")
+                )
+                import requests
+
+                try:
+                    headers = {"Accept": "application/json"}
+                    if token:
+                        headers["Authorization"] = f"Bearer {token}"
+                    resp = requests.get(url, headers=headers, timeout=10)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if isinstance(data, list):
+                        for item in data:
+                            sid = item.get("id", "")
+                            name = item.get("name", "")
+                            listw.addItem(f"{sid}  {name}")
+                except Exception as e:
+                    raise
+            except Exception as e:
+                QMessageBox.warning(self, "请求失败", f"无法获取远端策略: {e}")
+
+        def select_item():
+            it = listw.currentItem()
+            if not it:
+                QMessageBox.warning(self, "提示", "请先选择一项")
+                return
+            text = it.text()
+            sid = text.split()[0]
+            remote = f"remote://{sid}"
+            self.strategy_file_edit.setText(remote)
+            dlg.accept()
+
+        refresh_btn.clicked.connect(lambda: refresh())
+        select_btn.clicked.connect(lambda: select_item())
+        cancel_btn.clicked.connect(dlg.reject)
+
+        # 初次加载
+        refresh()
+        dlg.exec()
+
     def _on_strategy_file_changed(self):
         """策略文件改变时的处理"""
         strategy_file = self.strategy_file_edit.text().strip()
@@ -348,7 +425,7 @@ class LivePage(QWidget):
         )
         if dir_path:
             self.log_dir_edit.setText(dir_path)
-    
+
     def _on_broker_changed(self, broker_name: str):
         """券商类型变化时的处理"""
         if broker_name == "simulator":
@@ -383,7 +460,7 @@ class LivePage(QWidget):
 
         # 检查配置（根据券商类型）
         broker_name = self.broker_combo.currentText()
-        
+
         if broker_name == "simulator":
             # 模拟券商：只需要初始资金配置（可选）
             simulator_cash = self.config_manager.get("simulator_initial_cash", 1000000)
@@ -474,7 +551,7 @@ class LivePage(QWidget):
                 confirm_msg += "4. QMT客户端已启动并登录\n\n"
             confirm_msg += "继续吗？"
             default_button = QMessageBox.StandardButton.No
-        
+
         reply = QMessageBox.warning(
             self,
             "确认启动" if broker_name == "simulator" else "确认启动实盘",
@@ -494,7 +571,7 @@ class LivePage(QWidget):
 
         # 获取策略参数
         strategy_params = self.params_widget.get_params()
-        
+
         # 启动工作线程
         self.worker = LiveWorker(
             strategy_file=strategy_file,

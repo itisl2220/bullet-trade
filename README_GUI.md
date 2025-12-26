@@ -1,5 +1,30 @@
 # BulletTrade GUI 使用指南
 
+## 用户认证
+
+BulletTrade GUI 现在支持用户登录认证功能，与后端服务器完全集成：
+
+- **首次启动**: 系统会显示登录对话框
+- **后端认证**: 连接后端API进行JWT认证
+- **会话管理**: 登录状态保持24小时，支持JWT token
+- **记住登录**: 勾选"记住我"可保存登录信息
+- **用户菜单**: 登录后在菜单栏显示当前用户信息和登出选项
+
+### 服务器配置
+
+必须配置后端服务器才能使用登录功能：
+
+```bash
+# 环境变量
+export API_SERVER_HOST=localhost
+export API_SERVER_PORT=3000
+export API_SERVER_SSL=false
+
+# 或在GUI配置中设置
+```
+
+**重要**: GUI完全依赖后端服务器，如后端不可用将无法登录。
+
 ## 安装GUI依赖
 
 ```bash
