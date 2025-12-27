@@ -213,8 +213,6 @@ class BacktestEngine:
         if not self.strategy_file:
             raise ValueError("必须提供 strategy_file 或 initialize 函数")
 
-        log.info(f"加载策略文件: {self.strategy_file}")
-
         # 重置全局状态
         reset_globals()
         reset_settings()
