@@ -14,9 +14,33 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QFrame,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 
 from .theme import COLORS, FONTS, SPACING, RADIUS
+
+
+class LoginThread(QThread):
+    """登录线程 - 在后台执行登录验证"""
+
+    # 信号：登录完成 (success: bool, message: str)
+    login_finished = pyqtSignal(bool, str)
+
+    def __init__(self, auth_manager, username, password):
+        super().__init__()
+        self.auth_manager = auth_manager
+        self.username = username
+        self.password = password
+
+    def run(self):
+        """在后台线程执行登录"""
+        try:
+            success = self.auth_manager.authenticate(self.username, self.password)
+            if success:
+                self.login_finished.emit(True, "登录成功")
+            else:
+                self.login_finished.emit(False, "用户名或密码错误")
+        except Exception as e:
+            self.login_finished.emit(False, f"登录失败: {str(e)}")
 
 
 class LoginDialog(QDialog):
@@ -34,6 +58,9 @@ class LoginDialog(QDialog):
 
         # 用户认证状态
         self.auth_manager = None
+        self.login_thread = None  # 登录线程
+        self.loading_dots = 0  # 加载动画点数
+        self.is_loading = False  # 是否正在加载
 
         self._setup_ui()
         self._apply_styles()
@@ -295,42 +322,69 @@ class LoginDialog(QDialog):
             self.password_input.setFocus()
             return
 
-        # 显示登录进度
-        self.login_button.setText("登录中...")
+        # 如果正在登录，忽略重复点击
+        if self.login_thread and self.login_thread.isRunning():
+            return
+
+        # 禁用输入和按钮
+        self.username_input.setEnabled(False)
+        self.password_input.setEnabled(False)
         self.login_button.setEnabled(False)
+        self.remember_checkbox.setEnabled(False)
 
-        try:
-            # 验证登录
-            if self._validate_credentials(username, password):
-                # 保存记住的凭据
-                if self.remember_checkbox.isChecked() and self.auth_manager:
-                    self.auth_manager.save_credentials(username, password)
-                else:
-                    self.auth_manager.clear_credentials()
+        # 启动加载动画
+        self.is_loading = True
+        self.loading_dots = 0
+        self._start_loading_animation()
 
-                # 发送登录成功信号
-                self.login_success.emit(username)
-                self.accept()
+        # 在后台线程执行登录
+        self.login_thread = LoginThread(self.auth_manager, username, password)
+        self.login_thread.login_finished.connect(self._on_login_completed)
+        self.login_thread.start()
+
+    def _start_loading_animation(self):
+        """启动加载动画"""
+        if not self.is_loading:
+            return
+
+        self.loading_dots = (self.loading_dots + 1) % 4
+        dots = "." * self.loading_dots
+        self.login_button.setText(f"登录中{dots}")
+        # 继续动画
+        QTimer.singleShot(500, self._start_loading_animation)
+
+    def _on_login_completed(self, success: bool, message: str):
+        """登录完成回调"""
+        # 停止加载动画（通过is_loading标志防止动画继续）
+        self.is_loading = False
+        self.login_button.setText("登录")
+
+        # 恢复输入和按钮
+        self.username_input.setEnabled(True)
+        self.password_input.setEnabled(True)
+        self.login_button.setEnabled(True)
+        self.remember_checkbox.setEnabled(True)
+
+        if success:
+            # 保存记住的凭据
+            username = self.username_input.text().strip()
+            if self.remember_checkbox.isChecked() and self.auth_manager:
+                self.auth_manager.save_credentials(username, self.password_input.text())
             else:
-                self._show_message_box(
-                    "登录失败",
-                    "用户名或密码错误，或后端服务器不可用。\n\n" "请检查后端服务器是否正常运行。",
-                    QMessageBox.Icon.Warning,
-                )
-                self.password_input.clear()
-                self.password_input.setFocus()
-        finally:
-            # 恢复按钮状态
-            self.login_button.setText("登录")
-            self.login_button.setEnabled(True)
+                self.auth_manager.clear_credentials()
 
-    def _validate_credentials(self, username: str, password: str) -> bool:
-        """验证用户凭据"""
-        if self.auth_manager:
-            return self.auth_manager.authenticate(username, password)
+            # 发送登录成功信号
+            self.login_success.emit(username)
+            self.accept()
         else:
-            # 默认验证逻辑（用于演示）
-            return False
+            # 显示错误信息
+            self._show_message_box(
+                "登录失败",
+                f"{message}\n\n请检查后端服务器是否正常运行。",
+                QMessageBox.Icon.Warning,
+            )
+            self.password_input.clear()
+            self.password_input.setFocus()
 
     def _update_status_label(self):
         """更新状态标签"""

@@ -39,7 +39,7 @@
         }
       }
     },
-    "strategy_hash": "fefdcff8e729b65493e263d6488a0ddc",
+    "strategy_hash": "def56c1eded3eff640210b9772041b71",
     "tasks": [
       {
         "enabled": true,
@@ -48,15 +48,6 @@
         "monthday": null,
         "schedule_type": "daily",
         "time": "open",
-        "weekday": null
-      },
-      {
-        "enabled": true,
-        "func": "after_market_close",
-        "module": "strategy",
-        "monthday": null,
-        "schedule_type": "daily",
-        "time": "after_close",
         "weekday": null
       }
     ],

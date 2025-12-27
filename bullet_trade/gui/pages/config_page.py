@@ -26,6 +26,7 @@ from PyQt6.QtCore import Qt
 
 from ..theme import COLORS
 from ..config_manager import ConfigManager
+from ..message_helper import show_info, show_warning, show_error, show_confirm
 
 
 class ConfigPage(QWidget):
@@ -243,15 +244,24 @@ class ConfigPage(QWidget):
         """浏览路径"""
         current_path = line_edit.text() or str(Path.cwd())
         if 'dir' in key.lower():
-            dir_path = QFileDialog.getExistingDirectory(self, "选择目录", current_path)
+            dir_path = QFileDialog.getExistingDirectory(
+                self, "选择目录", current_path, options=QFileDialog.Option.DontUseNativeDialog
+            )
             if dir_path:
                 line_edit.setText(dir_path)
         elif 'path' in key.lower():
-            dir_path = QFileDialog.getExistingDirectory(self, "选择路径", current_path)
+            dir_path = QFileDialog.getExistingDirectory(
+                self, "选择路径", current_path, options=QFileDialog.Option.DontUseNativeDialog
+            )
             if dir_path:
                 line_edit.setText(dir_path)
         else:
-            file_path, _ = QFileDialog.getOpenFileName(self, "选择文件", current_path)
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "选择文件",
+                current_path,
+                options=QFileDialog.Option.DontUseNativeDialog,
+            )
             if file_path:
                 line_edit.setText(file_path)
     
@@ -285,12 +295,12 @@ class ConfigPage(QWidget):
                     color: {COLORS['success']};
                     padding: 8px;
                 """)
-                QMessageBox.information(self, "成功", "配置已保存到本地缓存！")
+                show_info(self, "配置已保存到本地缓存！", title="成功")
             else:
                 raise Exception("保存文件失败")
-            
+
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"保存配置失败:\n{str(e)}")
+            show_error(self, f"保存配置失败:\n{str(e)}", title="错误")
             self.status_label.setText(f"保存失败: {str(e)}")
             self.status_label.setStyleSheet(f"""
                 color: {COLORS['error']};
@@ -299,31 +309,28 @@ class ConfigPage(QWidget):
     
     def _reset_config(self):
         """重置为默认配置"""
-        reply = QMessageBox.question(
+        if show_confirm(
             self,
-            "确认重置",
             "确定要重置所有配置为默认值吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
+            title="确认重置",
+            default_ok=False,
+        ):
             # 重新初始化配置管理器
             self.config_manager._init_defaults()
             self.config_manager.save()
-            
+
             # 清空现有UI
             while self.config_layout.count():
                 item = self.config_layout.takeAt(0)
                 if item.widget():
                     item.widget().deleteLater()
-            
+
             self.input_widgets.clear()
-            
+
             # 重新加载
             self._load_config()
-            
-            QMessageBox.information(self, "成功", "配置已重置为默认值！")
+
+            show_info(self, "配置已重置为默认值！", title="成功")
     
     def _apply_to_env(self):
         """将配置应用到环境变量"""
@@ -338,13 +345,13 @@ class ConfigPage(QWidget):
             color: {COLORS['success']};
             padding: 8px;
         """)
-        
-        QMessageBox.information(
+
+        show_info(
             self,
-            "成功",
             "配置已应用到环境变量！\n\n"
             "注意：这些环境变量仅在当前会话中有效。\n"
-            "如需永久生效，请确保在启动时调用 apply_to_env()。"
+            "如需永久生效，请确保在启动时调用 apply_to_env()。",
+            title="成功",
         )
     
     def get_config_manager(self) -> ConfigManager:

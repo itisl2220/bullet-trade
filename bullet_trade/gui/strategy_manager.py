@@ -40,7 +40,6 @@ class StrategyManager:
         self.on_error: Optional[Callable[[str, str], None]] = None
         self.on_success: Optional[Callable[[str, str], None]] = None
         self.on_strategy_list_updated: Optional[Callable[[List[StrategyListItem]], None]] = None
-        self.on_run_button_enabled: Optional[Callable[[bool], None]] = None
 
     def set_ui_callbacks(
         self,
@@ -49,7 +48,6 @@ class StrategyManager:
         on_error: Optional[Callable[[str, str], None]] = None,
         on_success: Optional[Callable[[str, str], None]] = None,
         on_strategy_list_updated: Optional[Callable[[List[StrategyListItem]], None]] = None,
-        on_run_button_enabled: Optional[Callable[[bool], None]] = None,
     ):
         """设置UI回调函数"""
         self.on_status_update = on_status_update
@@ -57,7 +55,6 @@ class StrategyManager:
         self.on_error = on_error
         self.on_success = on_success
         self.on_strategy_list_updated = on_strategy_list_updated
-        self.on_run_button_enabled = on_run_button_enabled
 
     def _has_api_client(self) -> bool:
         """检查是否有可用的API客户端"""
@@ -122,25 +119,28 @@ class StrategyManager:
                 self.on_error("请求失败", f"无法获取远端策略列表: {e}")
             return False
 
-    def download_strategy(self, strategy_id: str) -> Tuple[bool, Optional[str]]:
+    def download_strategy(self, strategy_id: str) -> bool:
         """
-        下载并解密远程策略
+        下载并验证远程策略
+
+        注意：此方法下载策略并在内存中解密以验证完整性，
+        但不会返回解密后的代码，以保护远端策略的知识产权。
 
         Args:
             strategy_id: 策略ID
 
         Returns:
-            (success: bool, decrypted_code: Optional[str])
+            bool: 是否成功下载并验证策略
         """
         if not strategy_id:
             if self.on_error:
                 self.on_error("参数错误", "请先选择要下载的远端策略")
-            return False, None
+            return False
 
         if not self._has_api_client():
             if self.on_error:
                 self.on_error("未认证", "请先登录以下载策略")
-            return False, None
+            return False
 
         # 更新状态
         if self.on_status_update:
@@ -155,7 +155,7 @@ class StrategyManager:
                     self.on_status_update("下载失败", error_msg)
                 if self.on_error:
                     self.on_error("下载失败", error_msg)
-                return False, None
+                return False
 
             if self.on_progress_message:
                 self.on_progress_message("正在获取解密密钥...")
@@ -168,7 +168,7 @@ class StrategyManager:
                     self.on_status_update("下载失败", error_msg)
                 if self.on_error:
                     self.on_error("下载失败", error_msg)
-                return False, None
+                return False
 
             key_b64 = key_data.get("key_b64")
             if not key_b64:
@@ -177,26 +177,24 @@ class StrategyManager:
                     self.on_status_update("下载失败", error_msg)
                 if self.on_error:
                     self.on_error("下载失败", error_msg)
-                return False, None
+                return False
 
             if self.on_progress_message:
-                self.on_progress_message("正在解密策略文件...")
+                self.on_progress_message("正在验证策略文件...")
 
-            # 解密策略文件
+            # 解密策略文件以验证完整性（不返回解密后的代码）
             decrypted_code = self._decrypt_strategy(encrypted_data, key_b64)
 
-            # 缓存解密后的策略
-            self.downloaded_strategies[strategy_id] = decrypted_code
+            # 只缓存策略ID，不缓存解密后的代码
+            self.downloaded_strategies[strategy_id] = "[PROTECTED]"
 
             # 更新UI为成功状态
             if self.on_status_update:
-                self.on_status_update("下载完成", "策略下载并解密完成！")
-            if self.on_run_button_enabled:
-                self.on_run_button_enabled(True)
+                self.on_status_update("下载完成", "策略已下载并验证完整性")
             if self.on_success:
-                self.on_success("成功", "策略下载并解密完成，可以进行本地执行")
+                self.on_success("成功", "策略已下载，可以在回测或实盘中使用")
 
-            return True, decrypted_code
+            return True
 
         except Exception as e:
             error_msg = str(e)
@@ -204,53 +202,25 @@ class StrategyManager:
                 self.on_status_update("下载失败", f"下载失败: {error_msg}")
             if self.on_error:
                 self.on_error("下载失败", f"无法下载策略: {error_msg}")
-            return False, None
+            return False
 
-    def get_downloaded_strategy(self, strategy_id: str) -> Optional[str]:
+    def is_strategy_downloaded(self, strategy_id: str) -> bool:
         """
-        获取已下载的策略代码
+        检查策略是否已下载
 
         Args:
             strategy_id: 策略ID
 
         Returns:
-            策略代码或None
+            是否已下载
         """
-        return self.downloaded_strategies.get(strategy_id)
-
-    def run_strategy_locally(self, strategy_id: str) -> Tuple[bool, Optional[str]]:
-        """
-        在本地执行下载的远程策略
-
-        Args:
-            strategy_id: 策略ID
-
-        Returns:
-            (success: bool, strategy_code: Optional[str])
-        """
-        if not strategy_id:
-            if self.on_error:
-                self.on_error("参数错误", "请先选择要执行的远端策略")
-            return False, None
-
-        strategy_code = self.get_downloaded_strategy(strategy_id)
-        if not strategy_code:
-            if self.on_error:
-                self.on_error("策略未下载", "请先下载策略文件")
-            return False, None
-
-        if self.on_progress_message:
-            self.on_progress_message("策略已准备好，可以进行回测或实盘运行")
-
-        return True, strategy_code
+        return strategy_id in self.downloaded_strategies
 
     def clear_download_cache(self):
         """清除下载缓存"""
         self.downloaded_strategies.clear()
         if self.on_status_update:
             self.on_status_update("未下载", "")
-        if self.on_run_button_enabled:
-            self.on_run_button_enabled(False)
 
     def _decrypt_strategy(self, encrypted_data: bytes, key_b64: str) -> str:
         """解密策略文件"""

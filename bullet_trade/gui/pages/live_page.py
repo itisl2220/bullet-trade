@@ -30,6 +30,7 @@ from PyQt6.QtGui import QFont
 from ..theme import get_button_danger_style, get_log_text_style, COLORS
 from ..config_manager import ConfigManager
 from ..widgets.strategy_params_widget import StrategyParamsWidget
+from ..message_helper import show_info, show_warning, show_error, show_confirm
 
 
 class GuiLogHandler(logging.Handler):
@@ -62,13 +63,22 @@ class LiveWorker(QThread):
     output = pyqtSignal(str)
     finished = pyqtSignal(int)
 
-    def __init__(self, strategy_file, broker_name, runtime_dir, log_dir, strategy_params=None):
+    def __init__(
+        self,
+        strategy_file,
+        broker_name,
+        runtime_dir,
+        log_dir,
+        strategy_params=None,
+        decrypted_source=None,
+    ):
         super().__init__()
         self.strategy_file = strategy_file
         self.broker_name = broker_name
         self.runtime_dir = runtime_dir
         self.log_dir = log_dir
         self.strategy_params = strategy_params or {}
+        self.decrypted_source = decrypted_source
         self._running = True
 
     def run(self):
@@ -111,16 +121,67 @@ class LiveWorker(QThread):
             if self.runtime_dir:
                 overrides["runtime_dir"] = self.runtime_dir
 
-            engine = LiveEngine(
-                strategy_file=self.strategy_file,
-                broker_name=self.broker_name,
-                live_config=overrides or None,
-                strategy_params=self.strategy_params,
-            )
+            import tempfile
 
-            self.output.emit("启动实盘引擎...")
-            exit_code = engine.run()
-            self.finished.emit(exit_code)
+            temp_strategy_path = None
+            try:
+                # 如果提供了内存中解密源码，则写入临时文件并使用该文件（LiveEngine 需要文件路径）
+                if isinstance(self.decrypted_source, str) and self.decrypted_source:
+                    tf = tempfile.NamedTemporaryFile(
+                        delete=False,
+                        suffix=".py",
+                        prefix="remote_live_",
+                        mode="w",
+                        encoding="utf-8",
+                    )
+                    tf.write(self.decrypted_source)
+                    tf.flush()
+                    tf.close()
+                    temp_strategy_path = tf.name
+                    strategy_path = temp_strategy_path
+                else:
+                    strategy_path = self.strategy_file
+
+                # 输出当前使用的数据提供者（以便调试 provider 选择问题）
+                try:
+                    from bullet_trade.data.api import get_data_provider
+
+                    prov = get_data_provider()
+                    pname = getattr(prov, "name", prov.__class__.__name__)
+                    cname = prov.__class__.__name__
+                    self.output.emit(f"LiveWorker 数据提供者类名: {cname}, name属性: {pname}")
+                    info_parts = [f"class={cname}", f"name={pname}"]
+                    cfg = getattr(prov, "config", None)
+                    if isinstance(cfg, dict):
+                        for key in ("host", "port", "token", "source", "data_dir"):
+                            if cfg.get(key) is not None:
+                                info_parts.append(f"{key}={cfg.get(key)}")
+                    self.output.emit(f"当前数据提供者详情: {', '.join(info_parts)}")
+                except Exception as e:
+                    self.output.emit(f"读取当前数据提供者失败: {e}")
+                    import traceback
+
+                    self.output.emit(f"读取数据提供者失败详情: {traceback.format_exc()}")
+
+                engine = LiveEngine(
+                    strategy_file=strategy_path,
+                    broker_name=self.broker_name,
+                    live_config=overrides or None,
+                    strategy_params=self.strategy_params,
+                )
+
+                self.output.emit("启动实盘引擎...")
+                exit_code = engine.run()
+                self.finished.emit(exit_code)
+            finally:
+                # 清理临时策略文件（如果创建）
+                try:
+                    if temp_strategy_path:
+                        import os
+
+                        os.remove(temp_strategy_path)
+                except Exception:
+                    pass
         except Exception as e:
             error_msg = str(e)
             self.output.emit(f"错误: {error_msg}")
@@ -175,8 +236,40 @@ class LiveWorker(QThread):
 class LivePage(QWidget):
     """实盘交易页面"""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, *args, auth_manager=None, parent=None, **kwargs):
+        """
+        支持多种调用方式以兼容历史代码：
+        - LivePage(auth_manager=AuthManager(...))
+        - LivePage(AuthManager_instance)  (旧代码错误地把 auth_manager 作为位置参数)
+        - LivePage(parent_widget)
+        """
+        # 解析位置参数，兼容被错误地以位置参数传入 AuthManager 的情况
+        resolved_parent = parent
+        resolved_auth = auth_manager
+
+        if args:
+            first = args[0]
+            try:
+                # 延迟导入以避免循环依赖
+                from ..auth_manager import AuthManager
+
+                is_auth = isinstance(first, AuthManager)
+            except Exception:
+                # 如果无法导入 AuthManager，则通过属性判断（宽松方式）
+                is_auth = hasattr(first, "api_client") or hasattr(first, "get_current_user")
+
+            if is_auth and resolved_auth is None:
+                # 第一个位置参数是 AuthManager（被误当作 parent 传入）
+                resolved_auth = first
+                # 如果还有第二个位置参数，把它作为 parent
+                if len(args) > 1:
+                    resolved_parent = args[1]
+            else:
+                # 第一个位置参数是 parent
+                resolved_parent = first
+
+        super().__init__(resolved_parent)
+        self.auth_manager = resolved_auth
         self.worker = None
         self.config_manager = ConfigManager()
         self._init_ui()
@@ -328,7 +421,11 @@ class LivePage(QWidget):
     def _browse_strategy_file(self):
         """浏览策略文件"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择策略文件", str(Path.home()), "Python文件 (*.py);;所有文件 (*)"
+            self,
+            "选择策略文件",
+            str(Path.home()),
+            "Python文件 (*.py);;所有文件 (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if file_path:
             self.strategy_file_edit.setText(file_path)
@@ -338,63 +435,166 @@ class LivePage(QWidget):
         """打开远端策略选择对话框"""
         dlg = QDialog(self)
         dlg.setWindowTitle("选择远端策略")
+        dlg.setMinimumSize(600, 450)
+        dlg.setStyleSheet(f"""
+            QDialog {{
+                background-color: {COLORS['bg_primary']};
+            }}
+            QListWidget {{
+                background-color: {COLORS['bg_primary']};
+                border: 1px solid {COLORS['border_light']};
+                border-radius: 6px;
+                padding: 8px;
+                font-family: Microsoft YaHei UI, Segoe UI, Arial, sans-serif;
+                font-size: 10pt;
+            }}
+            QListWidget::item {{
+                color: {COLORS['text_primary']};
+                padding: 8px;
+                border-radius: 4px;
+                margin: 2px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {COLORS['primary']};
+                color: {COLORS['text_white']};
+            }}
+            QListWidget::item:hover {{
+                background-color: {COLORS['primary_hover']};
+                color: {COLORS['text_white']};
+            }}
+            QPushButton {{
+                background-color: {COLORS['primary']};
+                color: {COLORS['text_white']};
+                border: none;
+                border-radius: 6px;
+                padding: 6px 24px;
+                min-width: 90px;
+                min-height: 28px;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['primary_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {COLORS['primary_dark']};
+            }}
+            QPushButton:cancel {{
+                background-color: {COLORS['bg_secondary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border_medium']};
+            }}
+            QPushButton:cancel:hover {{
+                background-color: {COLORS['bg_tertiary']};
+                border-color: {COLORS['primary']};
+            }}
+        """)
         layout = QVBoxLayout(dlg)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
         listw = QListWidget()
         layout.addWidget(listw)
 
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
         refresh_btn = QPushButton("刷新")
         select_btn = QPushButton("选择")
         cancel_btn = QPushButton("取消")
+        cancel_btn.setProperty("cancel", True)
         btn_layout.addWidget(refresh_btn)
         btn_layout.addWidget(select_btn)
+        btn_layout.addStretch()
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
         def refresh():
             listw.clear()
+            # 使用 APIClient（通过 AuthManager）获取策略列表
             try:
-                # 优先使用显式配置的 strategy_server_url，否则使用 qmt_server_host/port
-                server = self.config_manager.get("strategy_server_url", None)
-                if not server:
-                    host = self.config_manager.get("qmt_server_host", "127.0.0.1")
-                    port = self.config_manager.get("qmt_server_port", 58620)
-                    server = f"http://{host}:{port}"
-                url = server.rstrip("/") + "/api/strategies"
-                token = (
-                    self.config_manager.get("qmt_server_token", "")
-                    or os.getenv("STRATEGY_API_TOKEN")
-                    or os.getenv("BT_API_TOKEN")
-                )
-                import requests
+                api_client = None
+                if getattr(self, "auth_manager", None) and getattr(
+                    self.auth_manager, "api_client", None
+                ):
+                    api_client = self.auth_manager.api_client
 
-                try:
-                    headers = {"Accept": "application/json"}
-                    if token:
-                        headers["Authorization"] = f"Bearer {token}"
-                    resp = requests.get(url, headers=headers, timeout=10)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    if isinstance(data, list):
-                        for item in data:
-                            sid = item.get("id", "")
-                            name = item.get("name", "")
-                            listw.addItem(f"{sid}  {name}")
-                except Exception as e:
-                    raise
+                if not api_client:
+                    raise Exception("未提供 AuthManager 或 APIClient，无法获取远端策略")
+
+                success, data = api_client.get_strategies()
+                if not success:
+                    raise Exception(data)
+                if isinstance(data, list):
+                    for item in data:
+                        sid = (
+                            item.get("id", "")
+                            if isinstance(item, dict)
+                            else getattr(item, "id", "")
+                        )
+                        name = (
+                            item.get("name", "")
+                            if isinstance(item, dict)
+                            else getattr(item, "name", "")
+                        )
+                        listw.addItem(f"{sid}  {name}")
+                else:
+                    raise Exception("后端返回格式异常")
             except Exception as e:
-                QMessageBox.warning(self, "请求失败", f"无法获取远端策略: {e}")
+                show_warning(self, f"无法获取远端策略: {e}")
 
         def select_item():
             it = listw.currentItem()
             if not it:
-                QMessageBox.warning(self, "提示", "请先选择一项")
+                show_warning(self, "请先选择一项")
                 return
             text = it.text()
             sid = text.split()[0]
-            remote = f"remote://{sid}"
-            self.strategy_file_edit.setText(remote)
-            dlg.accept()
+            # 直接从服务器下载并解密策略源码到内存，供实盘启动时注入使用
+            try:
+                decrypted_code = None
+                if getattr(self, "auth_manager", None) and getattr(
+                    self.auth_manager, "api_client", None
+                ):
+                    api_client = self.auth_manager.api_client
+                    success, encrypted = api_client.download_strategy(sid)
+                    if not success:
+                        raise Exception(encrypted)
+                    success, key_data = api_client.get_strategy_key(sid)
+                    if not success:
+                        raise Exception(key_data)
+                    key_b64 = key_data.get("key_b64") if isinstance(key_data, dict) else None
+                    if not key_b64:
+                        raise Exception("无法获取解密密钥")
+                    import base64
+                    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+                    key = base64.b64decode(key_b64)
+                    if len(encrypted) < 12 + 16:
+                        raise Exception("加密数据格式异常")
+                    nonce = encrypted[:12]
+                    tag = encrypted[-16:]
+                    ciphertext = encrypted[12:-16]
+                    aesgcm = AESGCM(key)
+                    plaintext = aesgcm.decrypt(nonce, ciphertext + tag, None)
+                    decrypted_code = plaintext.decode("utf-8")
+                else:
+                    raise Exception("无法下载策略：未提供 AuthManager 或 API 客户端")
+
+                if decrypted_code is not None:
+                    self.decrypted_strategy_source = decrypted_code
+                    self.strategy_file_edit.setText("")
+                    try:
+                        self.params_widget.load_strategy_params_from_source(decrypted_code)
+                    except Exception:
+                        self.params_widget._clear_params()
+                    show_info(
+                        self,
+                        "远端策略已下载并解密，已加载到内存（启动实盘时将直接注入执行）。",
+                    )
+                    dlg.accept()
+                else:
+                    raise Exception("解密后策略内容为空")
+            except Exception as e:
+                show_warning(self, f"无法下载或解密远端策略: {e}", title="下载失败")
 
         refresh_btn.clicked.connect(lambda: refresh())
         select_btn.clicked.connect(lambda: select_item())
@@ -413,7 +613,10 @@ class LivePage(QWidget):
     def _browse_runtime_dir(self):
         """浏览运行时目录"""
         dir_path = QFileDialog.getExistingDirectory(
-            self, "选择运行时目录", self.runtime_dir_edit.text() or "runtime/live"
+            self,
+            "选择运行时目录",
+            self.runtime_dir_edit.text() or "runtime/live",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if dir_path:
             self.runtime_dir_edit.setText(dir_path)
@@ -421,7 +624,10 @@ class LivePage(QWidget):
     def _browse_log_dir(self):
         """浏览日志目录"""
         dir_path = QFileDialog.getExistingDirectory(
-            self, "选择日志目录", self.log_dir_edit.text() or "logs/live"
+            self,
+            "选择日志目录",
+            self.log_dir_edit.text() or "logs/live",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if dir_path:
             self.log_dir_edit.setText(dir_path)
@@ -465,11 +671,11 @@ class LivePage(QWidget):
             # 模拟券商：只需要初始资金配置（可选）
             simulator_cash = self.config_manager.get("simulator_initial_cash", 1000000)
             if not simulator_cash or simulator_cash <= 0:
-                QMessageBox.warning(
+                show_warning(
                     self,
-                    "配置提示",
                     "模拟券商建议配置初始资金。\n\n"
                     '可在"配置"页面中设置"模拟器初始资金"（默认100万）。',
+                    title="配置提示",
                 )
         elif broker_name in ("qmt", "qmt-remote"):
             # QMT券商：需要QMT配置
@@ -478,38 +684,36 @@ class LivePage(QWidget):
 
             if broker_name == "qmt":
                 if not qmt_account_id:
-                    QMessageBox.warning(
+                    show_warning(
                         self,
-                        "配置错误",
                         "使用QMT券商需要配置QMT账户ID！\n\n" '请在"配置"页面中设置"QMT账户ID"。',
+                        title="配置错误",
                     )
                     return
 
                 if not qmt_data_path:
-                    QMessageBox.warning(
+                    show_warning(
                         self,
-                        "配置错误",
                         "使用QMT券商需要配置QMT数据路径！\n\n"
                         '请在"配置"页面中设置"QMT数据路径"。\n'
                         "通常路径为：C:\\国金QMT交易端模拟\\userdata_mini",
+                        title="配置错误",
                     )
                     return
 
                 # 检查数据路径是否存在
                 if qmt_data_path and not Path(qmt_data_path).exists():
-                    reply = QMessageBox.warning(
+                    if not show_confirm(
                         self,
-                        "路径不存在",
                         f"QMT数据路径不存在：\n{qmt_data_path}\n\n"
                         "请确认：\n"
                         "1. QMT客户端已正确安装\n"
                         "2. 数据路径配置正确\n"
                         "3. QMT客户端已启动并登录\n\n"
                         "是否仍要继续？",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.No,
-                    )
-                    if reply != QMessageBox.StandardButton.Yes:
+                        title="路径不存在",
+                        default_ok=False,
+                    ):
                         return
             elif broker_name == "qmt-remote":
                 # 远程QMT需要服务器配置
@@ -517,14 +721,14 @@ class LivePage(QWidget):
                 server_port = self.config_manager.get("qmt_server_port")
                 server_token = self.config_manager.get("qmt_server_token")
                 if not server_host or not server_port or not server_token:
-                    QMessageBox.warning(
+                    show_warning(
                         self,
-                        "配置错误",
                         "使用远程QMT需要配置服务器信息！\n\n"
                         '请在"配置"页面中设置：\n'
                         "1. QMT服务器主机\n"
                         "2. QMT服务器端口\n"
                         "3. QMT服务器Token",
+                        title="配置错误",
                     )
                     return
 
@@ -538,7 +742,7 @@ class LivePage(QWidget):
                 "3. 系统联调\n\n"
                 "继续吗？"
             )
-            default_button = QMessageBox.StandardButton.Yes
+            default_ok = True
         else:
             confirm_msg = (
                 "您确定要启动实盘交易吗？\n\n"
@@ -550,24 +754,23 @@ class LivePage(QWidget):
             if broker_name == "qmt":
                 confirm_msg += "4. QMT客户端已启动并登录\n\n"
             confirm_msg += "继续吗？"
-            default_button = QMessageBox.StandardButton.No
+            default_ok = False
 
-        reply = QMessageBox.warning(
+        if not show_confirm(
             self,
-            "确认启动" if broker_name == "simulator" else "确认启动实盘",
             confirm_msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            default_button,
-        )
-
-        if reply != QMessageBox.StandardButton.Yes:
+            title="确认启动" if broker_name == "simulator" else "确认启动实盘",
+            default_ok=default_ok,
+        ):
             return
 
         # 验证参数
         strategy_file = self.strategy_file_edit.text().strip()
+        # 支持内存中解密后的策略：如果没有本地文件，但存在 decrypted_strategy_source 则允许
         if not strategy_file or not Path(strategy_file).exists():
-            QMessageBox.warning(self, "错误", "请选择有效的策略文件")
-            return
+            if not getattr(self, "decrypted_strategy_source", None):
+                show_warning(self, "请选择有效的策略文件或先从远端加载策略", title="错误")
+                return
 
         # 获取策略参数
         strategy_params = self.params_widget.get_params()
@@ -579,6 +782,7 @@ class LivePage(QWidget):
             runtime_dir=self.runtime_dir_edit.text().strip() or None,
             log_dir=self.log_dir_edit.text().strip() or None,
             strategy_params=strategy_params,
+            decrypted_source=getattr(self, "decrypted_strategy_source", None),
         )
 
         self.worker.output.connect(self._append_log)
@@ -600,15 +804,12 @@ class LivePage(QWidget):
 
     def _stop_live(self):
         """停止实盘"""
-        reply = QMessageBox.question(
+        if show_confirm(
             self,
-            "确认停止",
             "确定要停止实盘交易吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
+            title="确认停止",
+            default_ok=False,
+        ):
             if self.worker and self.worker.isRunning():
                 self.worker.stop()
                 self.worker.wait()

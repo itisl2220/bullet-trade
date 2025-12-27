@@ -29,32 +29,38 @@ from .providers.base import DataProvider
 _cache_forced_off_warned = False
 
 
-def _create_provider(provider_name: Optional[str] = None, overrides: Optional[Dict[str, Any]] = None) -> DataProvider:
+def _create_provider(
+    provider_name: Optional[str] = None, overrides: Optional[Dict[str, Any]] = None
+) -> DataProvider:
     """
     根据名称创建数据提供者实例，支持读取环境配置并按需覆盖参数。
     """
     config = get_data_provider_config()
-    target = (provider_name or config.get('default') or 'jqdata').lower()
+    target = (provider_name or config.get("default") or "jqdata").lower()
     overrides = overrides or {}
 
-    if target == 'jqdata':
+    if target == "jqdata":
         from .providers.jqdata import JQDataProvider
-        provider_cfg = dict(config.get('jqdata', {}) or {})
+
+        provider_cfg = dict(config.get("jqdata", {}) or {})
         provider_cfg.update(overrides)
         return JQDataProvider(provider_cfg)
-    if target in ('tushare',):
+    if target in ("tushare",):
         from .providers.tushare import TushareProvider
-        provider_cfg = dict(config.get('tushare', {}) or {})
+
+        provider_cfg = dict(config.get("tushare", {}) or {})
         provider_cfg.update(overrides)
         return TushareProvider(provider_cfg)
-    if target in ('qmt', 'miniqmt'):
+    if target in ("qmt", "miniqmt"):
         from .providers.miniqmt import MiniQMTProvider
-        provider_cfg = dict(config.get('qmt', {}) or {})
+
+        provider_cfg = dict(config.get("qmt", {}) or {})
         provider_cfg.update(overrides)
         return MiniQMTProvider(provider_cfg)
-    if target in ('qmt-remote', 'remote-qmt', 'remote_qmt'):
+    if target in ("qmt-remote", "remote-qmt", "remote_qmt"):
         from .providers.remote_qmt import RemoteQmtProvider
-        provider_cfg = dict(config.get('remote_qmt', {}) or {})
+
+        provider_cfg = dict(config.get("remote_qmt", {}) or {})
         provider_cfg.update(overrides)
         return RemoteQmtProvider(provider_cfg)
 
@@ -106,6 +112,7 @@ class SecurityInfo(dict):
     def to_dict(self) -> Dict[str, Any]:
         return dict(self)
 
+
 def _ensure_auth():
     """确保数据提供者已认证"""
     global _auth_attempted
@@ -119,12 +126,15 @@ def _ensure_auth():
             print(f"数据源认证失败: {e}")
             # 不设置 _auth_attempted，允许重试
 
+
 def set_data_provider(provider: Union[DataProvider, str], **provider_kwargs) -> None:
     """
     设置当前数据提供者。
     支持直接传入 DataProvider 实例，或传入 provider 名称（如 'jqdata'、'tushare'、'miniqmt'）。
+    如果设置或认证失败，会抛出异常。
     """
     global _provider, _auth_attempted, _security_info_cache, _cache_forced_off_warned
+
     if isinstance(provider, DataProvider):
         _provider = provider
     else:
@@ -133,12 +143,11 @@ def set_data_provider(provider: Union[DataProvider, str], **provider_kwargs) -> 
     _auth_attempted = False
     _security_info_cache = {}
     _cache_forced_off_warned = False
-    try:
-        _provider.auth()
-        _auth_attempted = True
-    except Exception:
-        _auth_attempted = True
-        pass
+
+    # 尝试认证新提供者，如果失败则抛出异常
+    _provider.auth()
+    _auth_attempted = True
+
 
 def get_data_provider() -> DataProvider:
     """获取当前数据提供者（若未认证则触发一次认证）"""
@@ -183,7 +192,7 @@ def _config_base_dir() -> str:
 
 
 def _security_overrides_path() -> str:
-    return os.path.join(_config_base_dir(), 'config', 'security_overrides.json')
+    return os.path.join(_config_base_dir(), "config", "security_overrides.json")
 
 
 def _load_security_overrides_if_needed() -> None:
@@ -193,7 +202,7 @@ def _load_security_overrides_if_needed() -> None:
     path = _security_overrides_path()
     try:
         if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     _security_overrides = data
@@ -226,37 +235,37 @@ def _merge_overrides(security: str, base_info: Dict[str, Any]) -> Dict[str, Any]
     if not _security_overrides:
         return base_info
 
-    by_code = _security_overrides.get('by_code') or {}
-    by_category = _security_overrides.get('by_category') or {}
-    by_prefix = _security_overrides.get('by_prefix') or {}
+    by_code = _security_overrides.get("by_code") or {}
+    by_category = _security_overrides.get("by_category") or {}
+    by_prefix = _security_overrides.get("by_prefix") or {}
 
     out = dict(base_info)
 
     # 推断分类
-    category = out.get('category')
-    subtype = str(out.get('subtype') or '').lower()
-    primary = str(out.get('type') or '').lower()
+    category = out.get("category")
+    subtype = str(out.get("subtype") or "").lower()
+    primary = str(out.get("type") or "").lower()
     if not category:
-        if subtype in ('mmf', 'money_market_fund'):
-            category = 'money_market_fund'
-        elif primary in ('fund', 'etf'):
+        if subtype in ("mmf", "money_market_fund"):
+            category = "money_market_fund"
+        elif primary in ("fund", "etf"):
             # jqdatasdk 返回 type='etf'，统一归类为 fund
-            category = 'fund'
-        elif primary == 'stock':
-            category = 'stock'
+            category = "fund"
+        elif primary == "stock":
+            category = "stock"
         else:
-            category = 'stock'
-        out['category'] = category
+            category = "stock"
+        out["category"] = category
 
     # 前缀归类（仅在未显式设置 category 或仍为 stock 的情况下尝试）
     try:
         if isinstance(by_prefix, dict):
-            code = security.split('.', 1)[0]
+            code = security.split(".", 1)[0]
             for prefix, cat in by_prefix.items():
                 if code.startswith(prefix):
                     # 仅在未显式分类或默认为stock时采用前缀分类
-                    if out.get('category') in (None, '', 'stock'):
-                        out['category'] = cat
+                    if out.get("category") in (None, "", "stock"):
+                        out["category"] = cat
                     break
     except Exception:
         pass
@@ -289,6 +298,7 @@ class BacktestCurrentData:
             return self._cache[cache_key]
 
         try:
+
             def _decide_window(ts: Union[datetime, Date]) -> Dict[str, Any]:
                 ct: Optional[Time] = None
                 cd: Optional[Date] = None
@@ -309,8 +319,8 @@ class BacktestCurrentData:
             use_open_price_window = win["use_open_window"]
             current_date = win["current_date"]
 
-            use_real_price = _get_setting('use_real_price')
-            fields = ['open', 'close', 'high_limit', 'low_limit', 'paused']
+            use_real_price = _get_setting("use_real_price")
+            fields = ["open", "close", "high_limit", "low_limit", "paused"]
 
             def _build_fetch_kwargs(freq_text: str) -> Dict[str, Any]:
                 kw = dict(
@@ -319,7 +329,7 @@ class BacktestCurrentData:
                     frequency=freq_text,
                     fields=fields,
                     count=1,
-                    fq='pre',
+                    fq="pre",
                 )
                 if use_real_price:
                     pre_ref = current_date or current_dt
@@ -327,44 +337,63 @@ class BacktestCurrentData:
                 return kw
 
             if use_minute:
-                df = _provider.get_price(**_build_fetch_kwargs('minute'))
+                df = _provider.get_price(**_build_fetch_kwargs("minute"))
             else:
-                df = _provider.get_price(**_build_fetch_kwargs('daily'))
+                df = _provider.get_price(**_build_fetch_kwargs("daily"))
 
             if not df.empty:
-                if 'time' in df.columns and 'code' in df.columns:
+                if "time" in df.columns and "code" in df.columns:
                     row = df.iloc[-1]
-                    close_price = float(row['close']) if pd.notna(row['close']) else 0.0
-                    high_limit = float(row.get('high_limit', 0.0)) if pd.notna(row.get('high_limit', 0.0)) else 0.0
-                    low_limit = float(row.get('low_limit', 0.0)) if pd.notna(row.get('low_limit', 0.0)) else 0.0
-                    paused = bool(row.get('paused', False))
+                    close_price = float(row["close"]) if pd.notna(row["close"]) else 0.0
+                    high_limit = (
+                        float(row.get("high_limit", 0.0))
+                        if pd.notna(row.get("high_limit", 0.0))
+                        else 0.0
+                    )
+                    low_limit = (
+                        float(row.get("low_limit", 0.0))
+                        if pd.notna(row.get("low_limit", 0.0))
+                        else 0.0
+                    )
+                    paused = bool(row.get("paused", False))
                 else:
                     row = df.iloc[-1]
-                    close_price = float(row['close']) if pd.notna(row['close']) else 0.0
-                    if 'high_limit' in row:
-                        high_limit = float(row.get('high_limit', 0.0)) if pd.notna(row.get('high_limit', 0.0)) else 0.0
-                        low_limit = float(row.get('low_limit', 0.0)) if pd.notna(row.get('low_limit', 0.0)) else 0.0
-                        paused = bool(row.get('paused', False))
+                    close_price = float(row["close"]) if pd.notna(row["close"]) else 0.0
+                    if "high_limit" in row:
+                        high_limit = (
+                            float(row.get("high_limit", 0.0))
+                            if pd.notna(row.get("high_limit", 0.0))
+                            else 0.0
+                        )
+                        low_limit = (
+                            float(row.get("low_limit", 0.0))
+                            if pd.notna(row.get("low_limit", 0.0))
+                            else 0.0
+                        )
+                        paused = bool(row.get("paused", False))
                     else:
                         high_limit = close_price * 1.1
                         low_limit = close_price * 0.9
                         paused = False
 
-                open_price = float(row['open']) if 'open' in row and pd.notna(row['open']) else None
+                open_price = float(row["open"]) if "open" in row and pd.notna(row["open"]) else None
                 row_timestamp: Optional[datetime] = None
-                if 'time' in row and pd.notna(row['time']):
+                if "time" in row and pd.notna(row["time"]):
                     try:
-                        row_timestamp = pd.to_datetime(row['time'])
+                        row_timestamp = pd.to_datetime(row["time"])
                     except Exception:
                         row_timestamp = None
                 elif isinstance(df.index, pd.DatetimeIndex):
                     row_timestamp = df.index[-1].to_pydatetime()
-                elif hasattr(df.index[-1], 'to_timestamp'):
+                elif hasattr(df.index[-1], "to_timestamp"):
                     row_timestamp = df.index[-1].to_timestamp()
 
                 row_date = row_timestamp.date() if row_timestamp else None
                 should_use_open = (
-                    open_price is not None and use_open_price_window and current_date is not None and row_date == current_date
+                    open_price is not None
+                    and use_open_price_window
+                    and current_date is not None
+                    and row_date == current_date
                 )
                 last_price = open_price if should_use_open else close_price
 
@@ -413,10 +442,10 @@ class LiveCurrentData:
 
     @staticmethod
     def _to_qmt_code(code: str) -> str:
-        if code.endswith('.XSHE'):
-            return code.replace('.XSHE', '.SZ')
-        if code.endswith('.XSHG'):
-            return code.replace('.XSHG', '.SH')
+        if code.endswith(".XSHE"):
+            return code.replace(".XSHE", ".SZ")
+        if code.endswith(".XSHG"):
+            return code.replace(".XSHG", ".SH")
         return code
 
     def __getitem__(self, security: str) -> SecurityUnitData:
@@ -425,27 +454,27 @@ class LiveCurrentData:
         if cache_key in self._cache:
             return self._cache[cache_key]
 
-        requires_live = bool(getattr(_provider, 'requires_live_data', False))
+        requires_live = bool(getattr(_provider, "requires_live_data", False))
         snap = None
         try:
-            get_fn = getattr(_provider, 'get_live_current', None)
+            get_fn = getattr(_provider, "get_live_current", None)
             if callable(get_fn):
                 snap = get_fn(security)
         except Exception:
             if requires_live:
                 raise
 
-        if isinstance(snap, dict) and snap.get('last_price') is not None:
+        if isinstance(snap, dict) and snap.get("last_price") is not None:
             data = SecurityUnitData(
                 security=security,
-                last_price=float(snap.get('last_price') or 0.0),
-                high_limit=float(snap.get('high_limit') or 0.0),
-                low_limit=float(snap.get('low_limit') or 0.0),
-                paused=bool(snap.get('paused') or False),
+                last_price=float(snap.get("last_price") or 0.0),
+                high_limit=float(snap.get("high_limit") or 0.0),
+                low_limit=float(snap.get("low_limit") or 0.0),
+                paused=bool(snap.get("paused") or False),
             )
         else:
             if requires_live:
-                provider_name = getattr(_provider, 'name', 'unknown')
+                provider_name = getattr(_provider, "name", "unknown")
                 raise RuntimeError(
                     f"数据源 {provider_name} 未返回 {security} 的实时行情，请检查行情订阅/连接"
                 )
@@ -498,26 +527,26 @@ def _normalize_security_info(security: str, raw_info: Any) -> Dict[str, Any]:
         normalized.update({k: v for k, v in raw_info.items() if v is not None})
     else:
         for attr in (
-            'type',
-            'subtype',
-            'display_name',
-            'name',
-            'start_date',
-            'end_date',
-            'parent',
+            "type",
+            "subtype",
+            "display_name",
+            "name",
+            "start_date",
+            "end_date",
+            "parent",
         ):
             if hasattr(raw_info, attr):
                 value = getattr(raw_info, attr)
                 if value is not None:
                     normalized[attr] = value
 
-    normalized.setdefault('code', security)
+    normalized.setdefault("code", security)
 
-    for field in ('start_date', 'end_date'):
+    for field in ("start_date", "end_date"):
         normalized[field] = _coerce_date(normalized.get(field))
 
-    if normalized.get('end_date') is None:
-        normalized['end_date'] = Date(2200, 1, 1)
+    if normalized.get("end_date") is None:
+        normalized["end_date"] = Date(2200, 1, 1)
 
     return normalized
 
@@ -528,7 +557,7 @@ def get_security_info(security: str) -> SecurityInfo:
     若当前数据源不支持，返回空对象。
     """
     if not security:
-        return SecurityInfo('', {})
+        return SecurityInfo("", {})
 
     cached = _security_info_cache.get(security)
     if cached is not None:
@@ -536,7 +565,7 @@ def get_security_info(security: str) -> SecurityInfo:
 
     _ensure_auth()
 
-    info_fn = getattr(_provider, 'get_security_info', None)
+    info_fn = getattr(_provider, "get_security_info", None)
     if not callable(info_fn):
         empty = SecurityInfo(security, {})
         _security_info_cache[security] = empty
@@ -561,7 +590,7 @@ def _coerce_price_result_to_dataframe(result: Any) -> pd.DataFrame:
     不负责最终的字段 MultiIndex 兼容变换，仅做基础整形。
     """
     # Panel-like
-    if hasattr(result, 'to_frame'):
+    if hasattr(result, "to_frame"):
         try:
             return result.to_frame()
         except Exception as e:
@@ -573,21 +602,23 @@ def _coerce_price_result_to_dataframe(result: Any) -> pd.DataFrame:
     # DataFrame
     if isinstance(result, pd.DataFrame):
         # 长表 (time, code, value...)
-        if 'time' in result.columns and 'code' in result.columns:
+        if "time" in result.columns and "code" in result.columns:
             try:
-                value_columns = [c for c in result.columns if c not in ['time', 'code']]
+                value_columns = [c for c in result.columns if c not in ["time", "code"]]
                 if len(value_columns) == 1:
-                    pivot_df = result.pivot(index='time', columns='code', values=value_columns[0])
+                    pivot_df = result.pivot(index="time", columns="code", values=value_columns[0])
                     pivot_df.columns = pd.MultiIndex.from_product(
-                        [value_columns, pivot_df.columns.tolist()], names=['field', 'code']
+                        [value_columns, pivot_df.columns.tolist()], names=["field", "code"]
                     )
                     if not isinstance(pivot_df.index, pd.DatetimeIndex):
                         pivot_df.index = pd.to_datetime(pivot_df.index)
                     return pivot_df
                 # 多字段长表
-                parts = [result.pivot(index='time', columns='code', values=col) for col in value_columns]
+                parts = [
+                    result.pivot(index="time", columns="code", values=col) for col in value_columns
+                ]
                 df_wide = pd.concat(parts, axis=1, keys=value_columns)
-                df_wide.columns.names = ['field', 'code']
+                df_wide.columns.names = ["field", "code"]
                 if not isinstance(df_wide.index, pd.DatetimeIndex):
                     df_wide.index = pd.to_datetime(df_wide.index)
                 return df_wide
@@ -599,10 +630,10 @@ def _coerce_price_result_to_dataframe(result: Any) -> pd.DataFrame:
     # 字典或其他
     try:
         df = pd.DataFrame(result)
-        if 'time' in df.columns:
+        if "time" in df.columns:
             try:
-                df['time'] = pd.to_datetime(df['time'])
-                df.set_index('time', inplace=True)
+                df["time"] = pd.to_datetime(df["time"])
+                df.set_index("time", inplace=True)
             except Exception:
                 pass
         return df
@@ -615,17 +646,17 @@ def get_price(
     security: Union[str, List[str]],
     start_date: Optional[Union[str, datetime]] = None,
     end_date: Optional[Union[str, datetime]] = None,
-    frequency: str = 'daily',
+    frequency: str = "daily",
     fields: Optional[List[str]] = None,
     skip_paused: bool = False,
-    fq: str = 'pre',
+    fq: str = "pre",
     count: Optional[int] = None,
     panel: bool = True,
-    fill_paused: bool = True
+    fill_paused: bool = True,
 ) -> pd.DataFrame:
     """
     获取历史数据（避免未来函数，支持真实价格）
-    
+
     Args:
         security: 标的代码或代码列表
         start_date: 开始日期
@@ -637,16 +668,16 @@ def get_price(
         count: 获取数量
         panel: 是否返回panel格式
         fill_paused: 是否填充停牌数据
-        
+
     Returns:
         DataFrame
-        
+
     Raises:
         FutureDataError: 当 avoid_future_data=True 时访问未来数据
     """
     # 确保数据提供者已认证
     _ensure_auth()
-    
+
     if not _current_context:
         # 没有回测上下文，直接调用原始API
         return _provider.get_price(
@@ -659,12 +690,12 @@ def get_price(
             fq=fq,
             count=count,
             panel=panel,
-            fill_paused=fill_paused
+            fill_paused=fill_paused,
         )
-    
-    avoid_future = _get_setting('avoid_future_data')
-    use_real_price = _get_setting('use_real_price')
-    
+
+    avoid_future = _get_setting("avoid_future_data")
+    use_real_price = _get_setting("use_real_price")
+
     # 处理 end_date
     if end_date is None:
         end_date = datetime(2030, 12, 31)  # 默认一个很远的未来日期
@@ -672,27 +703,27 @@ def get_price(
         end_date = pd.to_datetime(end_date)
     elif isinstance(end_date, Date) and not isinstance(end_date, datetime):
         end_date = datetime.combine(end_date, Time(15, 0))
-    
+
     current_dt = _current_context.current_dt
-    
+
     # 标准化频率
-    frequency_map = {'daily': '1d', 'minute': '1m'}
+    frequency_map = {"daily": "1d", "minute": "1m"}
     freq = frequency_map.get(frequency, frequency)
-    
+
     # 避免未来数据检查
     if avoid_future:
         if fields is None:
-            fields = ['open', 'close', 'high', 'low', 'volume', 'money']
-        
+            fields = ["open", "close", "high", "low", "volume", "money"]
+
         # 检查 end_date 是否超过当前时间
-        if 'm' in freq:
+        if "m" in freq:
             # 分钟数据
             if end_date > current_dt:
                 raise FutureDataError(
                     f"avoid_future_data=True时，get_price的end_date({end_date})"
                     f"不能大于当前时间({current_dt})"
                 )
-        elif 'd' in freq:
+        elif "d" in freq:
             # 日数据
             if end_date.date() > current_dt.date():
                 raise FutureDataError(
@@ -702,14 +733,14 @@ def get_price(
             elif end_date.date() == current_dt.date():
                 # 同一天，需要检查时间和字段
                 _check_intraday_future_data(current_dt, fields, end_date)
-    
+
     # 限制 end_date 不超过当前时间
     end_date = min(end_date, current_dt)
-    
+
     # 真实价格模式：使用当前回测时间作为复权参考日期
-    if use_real_price and fq == 'pre':
+    if use_real_price and fq == "pre":
         # 使用当前回测日期作为复权参考日期，以获得当时的真实价格
-        
+
         # 确保 pre_factor_ref_date 是 datetime.date 类型
         if isinstance(current_dt, Date) and not isinstance(current_dt, datetime):
             pre_factor_ref_date = current_dt
@@ -721,10 +752,10 @@ def get_price(
             except:
                 log.warning(f"无法转换 current_dt 为 date 类型: {current_dt}, 使用今天日期")
                 pre_factor_ref_date = Date.today()
-        
+
         try:
             # 真实价格模式优先使用提供者内部引擎支持
-            #log.debug(f"调用 provider.get_price(prefer_engine=True): security={security}, fields={fields}")
+            # log.debug(f"调用 provider.get_price(prefer_engine=True): security={security}, fields={fields}")
             result = _provider.get_price(
                 security=security,
                 start_date=start_date,
@@ -737,15 +768,15 @@ def get_price(
                 panel=panel,
                 fill_paused=fill_paused,
                 prefer_engine=True,
-                pre_factor_ref_date=pre_factor_ref_date
+                pre_factor_ref_date=pre_factor_ref_date,
             )
-            #log.debug(f"provider.get_price 返回: {type(result)}, {result.shape if hasattr(result, 'shape') else 'No shape'}")
+            # log.debug(f"provider.get_price 返回: {type(result)}, {result.shape if hasattr(result, 'shape') else 'No shape'}")
             df = _coerce_price_result_to_dataframe(result)
             return _make_compatible_dataframe(df, fields)
-            
+
         except Exception as e:
             log.warning(f"真实价格模式调用失败: {e}，回退到标准复权")
-    
+
     # 标准模式或真实价格模式失败时的回退策略
     try:
         df = _provider.get_price(
@@ -758,28 +789,27 @@ def get_price(
             fq=fq,
             count=count,
             panel=panel,
-            fill_paused=fill_paused
+            fill_paused=fill_paused,
         )
-        
+
         # 兼容性处理：让多证券情况下也能通过 df['close'] 访问
         return _make_compatible_dataframe(df, fields)
-        
+
     except Exception as e:
         log.error(f"获取价格数据失败: {e}")
         return pd.DataFrame()
 
 
-
 def _make_compatible_dataframe(df: pd.DataFrame, fields: Optional[List[str]]) -> pd.DataFrame:
     """
     让 DataFrame 兼容策略代码的访问方式
-    
+
     目标：让多证券情况下也能通过 df['close'] 访问到数据
-    
+
     Args:
         df: 原始 DataFrame
         fields: 请求的字段列表
-        
+
     Returns:
         兼容的 DataFrame（列为 MultiIndex(field, code)），保证 df['close'] 返回二维矩阵
     """
@@ -787,35 +817,44 @@ def _make_compatible_dataframe(df: pd.DataFrame, fields: Optional[List[str]]) ->
         return df
 
     known_fields = {
-        'open', 'close', 'high', 'low', 'volume', 'money',
-        'avg', 'price', 'high_limit', 'low_limit', 'paused'
+        "open",
+        "close",
+        "high",
+        "low",
+        "volume",
+        "money",
+        "avg",
+        "price",
+        "high_limit",
+        "low_limit",
+        "paused",
     }
 
     # 情况1：索引是 (code, time) 的 MultiIndex（panel=False 常见返回）
-    if isinstance(df.index, pd.MultiIndex) and set(df.index.names or []) >= {'code', 'time'}:
+    if isinstance(df.index, pd.MultiIndex) and set(df.index.names or []) >= {"code", "time"}:
         try:
             df_reset = df.reset_index()
             # 确定值字段列表
             if fields and len(fields) > 0:
                 value_columns = [col for col in fields if col in df_reset.columns]
             else:
-                value_columns = [c for c in df_reset.columns if c not in ['code', 'time']]
+                value_columns = [c for c in df_reset.columns if c not in ["code", "time"]]
             if not value_columns:
                 return df
 
             wide_list = []
             for col in value_columns:
-                wide_col = df_reset.pivot(index='time', columns='code', values=col)
+                wide_col = df_reset.pivot(index="time", columns="code", values=col)
                 wide_list.append(wide_col)
 
             if len(wide_list) == 1:
                 wide = wide_list[0]
                 wide.columns = pd.MultiIndex.from_product(
-                    [value_columns, wide.columns.tolist()], names=['field', 'code']
+                    [value_columns, wide.columns.tolist()], names=["field", "code"]
                 )
             else:
                 wide = pd.concat(wide_list, axis=1, keys=value_columns)
-                wide.columns.names = ['field', 'code']
+                wide.columns.names = ["field", "code"]
 
             if not isinstance(wide.index, pd.DatetimeIndex):
                 wide.index = pd.to_datetime(wide.index)
@@ -831,7 +870,7 @@ def _make_compatible_dataframe(df: pd.DataFrame, fields: Optional[List[str]]) ->
             # 期望：field 在外层。如果 field 出现在第2层而非第1层，则交换层级。
             if (level1 & known_fields) and not (level0 & known_fields):
                 df = df.swaplevel(0, 1, axis=1)
-            df.columns.names = ['field', 'code']
+            df.columns.names = ["field", "code"]
             return df
         except Exception:
             return df
@@ -840,7 +879,7 @@ def _make_compatible_dataframe(df: pd.DataFrame, fields: Optional[List[str]]) ->
     if fields and len(fields) == 1 and df.shape[1] > 1:
         try:
             df.columns = pd.MultiIndex.from_product(
-                [fields, list(map(str, df.columns))], names=['field', 'code']
+                [fields, list(map(str, df.columns))], names=["field", "code"]
             )
             return df
         except Exception:
@@ -853,43 +892,48 @@ def _make_compatible_dataframe(df: pd.DataFrame, fields: Optional[List[str]]) ->
 def _check_intraday_future_data(current_dt: datetime, fields: List[str], end_date: datetime):
     """
     检查盘中是否访问未来数据
-    
+
     Args:
         current_dt: 当前回测时间
         fields: 请求的字段
         end_date: 结束日期
-        
+
     Raises:
         FutureDataError: 如果访问了未来数据
     """
     # 交易时间段
     market_open = Time(9, 30)
     market_close = Time(15, 0)
-    
+
     current_time = current_dt.time()
-    
+
     # 盘前（开盘前）
     if current_time < market_open:
         future_fields = set(fields) & {
-            'open', 'close', 'high', 'low', 'volume', 'money', 'avg', 'price'
+            "open",
+            "close",
+            "high",
+            "low",
+            "volume",
+            "money",
+            "avg",
+            "price",
         }
         if future_fields:
             raise FutureDataError(
                 f"avoid_future_data=True时，当天开盘前不能获取当日的{future_fields}字段数据，"
                 f"current_dt={current_dt}, end_date={end_date}"
             )
-    
+
     # 盘中（开盘后、收盘前）
     elif market_open <= current_time < market_close:
-        future_fields = set(fields) & {
-            'close', 'high', 'low', 'volume', 'money', 'avg', 'price'
-        }
+        future_fields = set(fields) & {"close", "high", "low", "volume", "money", "avg", "price"}
         if future_fields:
             raise FutureDataError(
                 f"avoid_future_data=True时，盘中不能取当日的{future_fields}字段数据，"
                 f"current_dt={current_dt}, end_date={end_date}"
             )
-    
+
     # 盘后（收盘后）- 可以获取所有数据
     else:
         pass
@@ -898,11 +942,11 @@ def _check_intraday_future_data(current_dt: datetime, fields: List[str], end_dat
 def attribute_history(
     security: str,
     count: int,
-    unit: str = '1d',
+    unit: str = "1d",
     fields: Optional[List[str]] = None,
     skip_paused: bool = False,
     df: bool = True,
-    fq: str = 'pre'
+    fq: str = "pre",
 ) -> Union[pd.DataFrame, Dict]:
     """
     获取单个标的历史数据（避免未来函数，支持真实价格）。
@@ -923,12 +967,12 @@ def attribute_history(
         end_date = datetime.now()
     else:
         end_date = _current_context.current_dt
-        if 'm' in unit:
+        if "m" in unit:
             end_date = end_date + timedelta(minutes=1)
-        elif 'd' in unit:
+        elif "d" in unit:
             end_date = end_date - timedelta(days=1)
 
-    frequency = 'daily' if 'd' in unit else 'minute'
+    frequency = "daily" if "d" in unit else "minute"
 
     try:
         return get_price(
@@ -938,7 +982,7 @@ def attribute_history(
             fields=fields,
             skip_paused=skip_paused,
             fq=fq,
-            count=count
+            count=count,
         )
     except Exception as e:
         log.error(f"获取历史数据失败: {e}")
@@ -949,7 +993,8 @@ def _should_use_live_current() -> bool:
     """判断是否使用 LiveCurrentData：只要是实盘则启用。"""
     try:
         from ..core.globals import g  # type: ignore
-        return bool(getattr(g, 'live_trade', False))
+
+        return bool(getattr(g, "live_trade", False))
     except Exception:
         return False
 
@@ -957,13 +1002,13 @@ def _should_use_live_current() -> bool:
 def get_current_data() -> Any:
     """
     获取当前行情数据容器（避免未来函数）
-    
+
     返回一个CurrentData对象，支持延迟加载。
     当访问 current_data[security] 时才真正获取该标的的数据。
-    
+
     Returns:
         CurrentData对象，支持字典式访问
-        
+
     Examples:
         >>> current_data = get_current_data()
         >>> price = current_data['000001.XSHE'].last_price
@@ -975,28 +1020,35 @@ def get_current_data() -> Any:
         class EmptyCurrentData:
             def __getitem__(self, key):
                 return SecurityUnitData(security=key, last_price=0.0)
+
             def __contains__(self, key):
                 return False
+
             def keys(self):
                 return []
+
         return EmptyCurrentData()
-    
-    return LiveCurrentData(_current_context) if _should_use_live_current() else BacktestCurrentData(_current_context)
+
+    return (
+        LiveCurrentData(_current_context)
+        if _should_use_live_current()
+        else BacktestCurrentData(_current_context)
+    )
 
 
 def get_trade_days(
     start_date: Optional[Union[str, datetime]] = None,
     end_date: Optional[Union[str, datetime]] = None,
-    count: Optional[int] = None
+    count: Optional[int] = None,
 ) -> List[datetime]:
     """
     获取交易日列表（避免未来函数）
-    
+
     Args:
         start_date: 开始日期
         end_date: 结束日期（会自动限制在当前回测时间之前）
         count: 获取数量
-        
+
     Returns:
         交易日列表
     """
@@ -1009,13 +1061,9 @@ def get_trade_days(
             end_date = min(end_date, max_date)
         else:
             end_date = max_date
-    
+
     try:
-        trade_days = _provider.get_trade_days(
-            start_date=start_date,
-            end_date=end_date,
-            count=count
-        )
+        trade_days = _provider.get_trade_days(start_date=start_date, end_date=end_date, count=count)
         return [pd.to_datetime(d) for d in trade_days]
     except Exception as e:
         log.error(f"获取交易日失败: {e}")
@@ -1023,22 +1071,21 @@ def get_trade_days(
 
 
 def get_all_securities(
-    types: Union[str, List[str]] = 'stock',
-    date: Optional[Union[str, datetime]] = None
+    types: Union[str, List[str]] = "stock", date: Optional[Union[str, datetime]] = None
 ) -> pd.DataFrame:
     """
     获取所有标的信息
-    
+
     Args:
         types: 标的类型 ('stock', 'fund', 'index', 'futures', 'etf', 'lof', 'fja', 'fjb')
         date: 日期（会自动限制在当前回测时间之前）
-        
+
     Returns:
         DataFrame
     """
     if _current_context and date is None:
         date = _current_context.current_dt
-    
+
     try:
         return _provider.get_all_securities(types=types, date=date)
     except Exception as e:
@@ -1046,23 +1093,20 @@ def get_all_securities(
         return pd.DataFrame()
 
 
-def get_index_stocks(
-    index_symbol: str,
-    date: Optional[Union[str, datetime]] = None
-) -> List[str]:
+def get_index_stocks(index_symbol: str, date: Optional[Union[str, datetime]] = None) -> List[str]:
     """
     获取指数成分股
-    
+
     Args:
         index_symbol: 指数代码
         date: 日期（会自动限制在当前回测时间之前）
-        
+
     Returns:
         成分股代码列表
     """
     if _current_context and date is None:
         date = _current_context.current_dt
-    
+
     try:
         return _provider.get_index_stocks(index_symbol, date=date)
     except Exception as e:
@@ -1072,30 +1116,37 @@ def get_index_stocks(
 
 def get_tick_decimals(security: str) -> int:
     """获取标的的价格精度（小数位数）。
-    
+
     根据 security_overrides.json 的配置确定：
     - stock: 2位小数（0.01步长）
     - fund/money_market_fund: 3位小数（0.001步长）
-    
+
     Args:
         security: 证券代码，如 '512100.XSHG'
-    
+
     Returns:
         int: 价格精度，2 或 3
     """
     info = get_security_info(security)
-    category = str(info.get('category') or '').lower()
-    if category in ('fund', 'money_market_fund'):
+    category = str(info.get("category") or "").lower()
+    if category in ("fund", "money_market_fund"):
         return 3
     return 2
 
 
 __all__ = [
-    'get_price', 'attribute_history', 'get_current_data',
-    'get_trade_days', 'get_all_securities', 'get_index_stocks',
-    'set_current_context', 'set_data_provider', 'get_data_provider',
-    'set_security_overrides', 'reset_security_overrides',
-    'get_tick_decimals',
+    "get_price",
+    "attribute_history",
+    "get_current_data",
+    "get_trade_days",
+    "get_all_securities",
+    "get_index_stocks",
+    "set_current_context",
+    "set_data_provider",
+    "get_data_provider",
+    "set_security_overrides",
+    "reset_security_overrides",
+    "get_tick_decimals",
 ]
 
 
@@ -1121,13 +1172,13 @@ def _infer_security_type(security: str, ref_date: Optional[Date]) -> str:
     """
     try:
         check_date = ref_date or (_current_context.current_dt.date() if _current_context else None)
-        for t in ['stock', 'etf', 'lof', 'fund', 'fja', 'fjb']:
+        for t in ["stock", "etf", "lof", "fund", "fja", "fjb"]:
             df = _provider.get_all_securities(types=t, date=check_date)
             if not df.empty and security in df.index:
                 return t
     except Exception:
         pass
-    return 'stock'
+    return "stock"
 
 
 def _parse_dividend_note(note: str) -> Dict[str, Any]:
@@ -1140,45 +1191,45 @@ def _parse_dividend_note(note: str) -> Dict[str, Any]:
     - “每10股送X股” / “10送X股”
     - “每10股转增X股” / “10转X股” / “转增X股(每10股)”
     """
-    result = {'per_base': 10, 'stock_paid': 0.0, 'into_shares': 0.0, 'bonus_pre_tax': 0.0}
+    result = {"per_base": 10, "stock_paid": 0.0, "into_shares": 0.0, "bonus_pre_tax": 0.0}
     if not note:
         return result
-    s = note.replace('（', '(').replace('）', ')').replace('，', ',').replace('。', '.')
-    s = re.sub(r'\s+', '', s)
+    s = note.replace("（", "(").replace("）", ")").replace("，", ",").replace("。", ".")
+    s = re.sub(r"\s+", "", s)
 
     # 基数：每股 或 每10股
-    if '每股' in s:
-        result['per_base'] = 1
-    elif '每10股' in s or re.search(r'(^|[^\d])10(送|转|派)', s):
-        result['per_base'] = 10
+    if "每股" in s:
+        result["per_base"] = 1
+    elif "每10股" in s or re.search(r"(^|[^\d])10(送|转|派)", s):
+        result["per_base"] = 10
 
     # 派现（税前）
-    m = re.search(r'(每10股|10派|派)(?P<val>\d+(?:\.\d+)?)(元|现金)?', s)
-    if not m and '每股' in s:
-        m = re.search(r'每股派(?P<val>\d+(?:\.\d+)?)(元|现金)?', s)
+    m = re.search(r"(每10股|10派|派)(?P<val>\d+(?:\.\d+)?)(元|现金)?", s)
+    if not m and "每股" in s:
+        m = re.search(r"每股派(?P<val>\d+(?:\.\d+)?)(元|现金)?", s)
         if m:
             # 每股派 -> 每10股派
-            result['bonus_pre_tax'] = float(m.group('val')) * 10
+            result["bonus_pre_tax"] = float(m.group("val")) * 10
     elif m:
-        result['bonus_pre_tax'] = float(m.group('val'))
+        result["bonus_pre_tax"] = float(m.group("val"))
 
     # 送股
-    m = re.search(r'(每10股|10送|送)(?P<val>\d+(?:\.\d+)?)(股)?', s)
-    if not m and '每股' in s:
-        m = re.search(r'每股送(?P<val>\d+(?:\.\d+)?)(股)?', s)
+    m = re.search(r"(每10股|10送|送)(?P<val>\d+(?:\.\d+)?)(股)?", s)
+    if not m and "每股" in s:
+        m = re.search(r"每股送(?P<val>\d+(?:\.\d+)?)(股)?", s)
         if m:
-            result['stock_paid'] = float(m.group('val')) * 10
+            result["stock_paid"] = float(m.group("val")) * 10
     elif m:
-        result['stock_paid'] = float(m.group('val'))
+        result["stock_paid"] = float(m.group("val"))
 
     # 转增
-    m = re.search(r'(每10股|10转|转增|转)(?P<val>\d+(?:\.\d+)?)(股)?', s)
-    if not m and '每股' in s:
-        m = re.search(r'每股转增(?P<val>\d+(?:\.\d+)?)(股)?', s)
+    m = re.search(r"(每10股|10转|转增|转)(?P<val>\d+(?:\.\d+)?)(股)?", s)
+    if not m and "每股" in s:
+        m = re.search(r"每股转增(?P<val>\d+(?:\.\d+)?)(股)?", s)
         if m:
-            result['into_shares'] = float(m.group('val')) * 10
+            result["into_shares"] = float(m.group("val")) * 10
     elif m:
-        result['into_shares'] = float(m.group('val'))
+        result["into_shares"] = float(m.group("val"))
 
     return result
 
@@ -1186,7 +1237,7 @@ def _parse_dividend_note(note: str) -> Dict[str, Any]:
 def get_split_dividend(
     security: str,
     start_date: Optional[Union[str, datetime, Date]] = None,
-    end_date: Optional[Union[str, datetime, Date]] = None
+    end_date: Optional[Union[str, datetime, Date]] = None,
 ) -> List[Dict[str, Any]]:
     """
     获取指定标的在区间内的分红/拆分事件（统一结构）。
@@ -1209,7 +1260,7 @@ def get_split_dividend(
         if sd is None:
             sd = ed
     elif sd is None or ed is None:
-        raise UserError('get_split_dividend 需要提供开始/结束日期，或在回测上下文中调用')
+        raise UserError("get_split_dividend 需要提供开始/结束日期，或在回测上下文中调用")
 
     # 直接通过当前数据提供者获取标准化事件
     try:

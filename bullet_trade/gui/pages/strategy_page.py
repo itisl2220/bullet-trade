@@ -18,8 +18,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont
 
-from ..theme import get_code_editor_style
+from ..theme import get_code_editor_style, COLORS, FONTS, SPACING, RADIUS
 from ..strategy_manager import StrategyManager
+from ..message_helper import show_info, show_warning, show_error, show_confirm
 
 
 class StrategyPage(QWidget):
@@ -45,7 +46,6 @@ class StrategyPage(QWidget):
             on_error=self._on_strategy_error,
             on_success=self._on_strategy_success,
             on_strategy_list_updated=self._on_strategy_list_updated,
-            on_run_button_enabled=self._on_run_button_enabled,
         )
 
     def _on_strategy_status_update(self, status: str, message: str):
@@ -64,15 +64,11 @@ class StrategyPage(QWidget):
 
     def _on_strategy_error(self, title: str, message: str):
         """策略错误回调"""
-        from PyQt6.QtWidgets import QMessageBox
-
-        QMessageBox.warning(self, title, message)
+        show_warning(self, message, title=title)
 
     def _on_strategy_success(self, title: str, message: str):
         """策略成功回调"""
-        from PyQt6.QtWidgets import QMessageBox
-
-        QMessageBox.information(self, title, message)
+        show_info(self, message, title=title)
 
     def _on_strategy_list_updated(self, strategies):
         """策略列表更新回调"""
@@ -88,10 +84,6 @@ class StrategyPage(QWidget):
             item = QListWidgetItem(f"{strategy.id}  {strategy.name}")
             item.setData(256, strategy.meta or "")  # Qt.UserRole = 256
             self._safe_ui_update(lambda: self.remote_list.addItem(item))
-
-    def _on_run_button_enabled(self, enabled: bool):
-        """运行按钮启用状态回调"""
-        self._safe_ui_update(lambda: self.remote_run_local_btn.setEnabled(enabled))
 
     def _safe_ui_update(self, update_func):
         """安全地更新UI，避免对象已被删除的错误"""
@@ -152,21 +144,41 @@ class StrategyPage(QWidget):
         remote_toolbar.addWidget(self.remote_refresh_btn)
         remote_toolbar.addStretch()
 
-        # 策略下载和本地执行按钮
+        # 策略下载按钮
         self.remote_download_btn = QPushButton("下载策略")
         self.remote_download_btn.setEnabled(False)
         self.remote_download_btn.clicked.connect(self._download_remote_strategy)
         remote_toolbar.addWidget(self.remote_download_btn)
 
-        self.remote_run_local_btn = QPushButton("本地执行")
-        self.remote_run_local_btn.setEnabled(False)
-        self.remote_run_local_btn.clicked.connect(self._run_remote_strategy_locally)
-        remote_toolbar.addWidget(self.remote_run_local_btn)
-
         remote_layout.addLayout(remote_toolbar)
 
         self.remote_list = QListWidget()
         self.remote_list.itemSelectionChanged.connect(self._on_remote_selected)
+        # 设置列表样式，确保文字可见
+        self.remote_list.setStyleSheet(
+            f"""
+            QListWidget {{
+                background-color: {COLORS['bg_primary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border_medium']};
+                border-radius: {RADIUS['md']};
+                padding: 4px;
+            }}
+            QListWidget::item {{
+                color: {COLORS['text_primary']};
+                padding: 8px;
+                border-radius: {RADIUS['sm']};
+            }}
+            QListWidget::item:selected {{
+                background-color: {COLORS['primary']};
+                color: {COLORS['text_white']};
+            }}
+            QListWidget::item:hover {{
+                background-color: {COLORS['primary_hover']};
+                color: {COLORS['text_white']};
+            }}
+            """
+        )
         remote_layout.addWidget(self.remote_list)
 
         self.remote_meta = QTextEdit()
@@ -175,7 +187,7 @@ class StrategyPage(QWidget):
         remote_layout.addWidget(self.remote_meta)
 
         # 策略下载状态区域
-        download_group = QGroupBox("策略下载与执行")
+        download_group = QGroupBox("策略下载状态")
         download_layout = QVBoxLayout(download_group)
 
         download_toolbar = QHBoxLayout()
@@ -191,18 +203,18 @@ class StrategyPage(QWidget):
 
         self.download_info = QTextEdit()
         self.download_info.setReadOnly(True)
-        self.download_info.setPlaceholderText("策略下载和解密信息将显示在这里")
+        self.download_info.setPlaceholderText("策略下载状态信息将显示在这里。\n注意：远端策略代码是加密的，下载后不会在本地显示。")
         self.download_info.setMaximumHeight(150)
         download_layout.addWidget(self.download_info)
 
         layout.addWidget(remote_group)
 
         # 提示信息
-        from ..theme import COLORS
-
         info_label = QLabel(
             "提示：策略文件应包含 initialize(context) 函数，"
-            "可选包含 handle_data(context, data)、before_trading_start(context) 等函数"
+            "可选包含 handle_data(context, data)、before_trading_start(context) 等函数\n\n"
+            "注意：远端策略是加密保护的，下载后不会在本地显示代码内容。"
+            "下载的策略可以直接用于回测和实盘交易，但不能在本地编辑或查看。"
         )
         info_label.setWordWrap(True)
         info_label.setStyleSheet(f"color: {COLORS['text_secondary']}; padding: 8px;")
@@ -216,7 +228,11 @@ class StrategyPage(QWidget):
     def _open_file(self):
         """打开文件"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择策略文件", str(Path.home()), "Python文件 (*.py);;所有文件 (*)"
+            self,
+            "选择策略文件",
+            str(Path.home()),
+            "Python文件 (*.py);;所有文件 (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if file_path:
             self.load_strategy_file(file_path)
@@ -251,9 +267,8 @@ class StrategyPage(QWidget):
             pretty = str(meta)
         self.remote_meta.setPlainText(pretty)
 
-        # 启用下载和本地执行按钮
+        # 启用下载按钮
         self.remote_download_btn.setEnabled(True)
-        self.remote_run_local_btn.setEnabled(True)
 
     def load_strategy_file(self, file_path: str):
         """加载策略文件"""
@@ -267,7 +282,7 @@ class StrategyPage(QWidget):
             self.save_btn.setEnabled(False)
             self.save_as_btn.setEnabled(False)
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"无法打开文件: {e}")
+            show_error(self, f"无法打开文件: {e}", title="错误")
 
     def _save_file(self):
         """保存文件"""
@@ -280,14 +295,18 @@ class StrategyPage(QWidget):
                 f.write(self.code_editor.toPlainText())
             self.save_btn.setEnabled(False)
             self.save_as_btn.setEnabled(False)
-            QMessageBox.information(self, "成功", "文件已保存")
+            show_info(self, "文件已保存", title="成功")
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"无法保存文件: {e}")
+            show_error(self, f"无法保存文件: {e}", title="错误")
 
     def _save_as_file(self):
         """另存为"""
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "保存策略文件", str(Path.home()), "Python文件 (*.py);;所有文件 (*)"
+            self,
+            "保存策略文件",
+            str(Path.home()),
+            "Python文件 (*.py);;所有文件 (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if file_path:
             try:
@@ -297,9 +316,9 @@ class StrategyPage(QWidget):
                 self.file_label.setText(f"文件: {Path(file_path).name}")
                 self.save_btn.setEnabled(False)
                 self.save_as_btn.setEnabled(False)
-                QMessageBox.information(self, "成功", "文件已保存")
+                show_info(self, "文件已保存", title="成功")
             except Exception as e:
-                QMessageBox.critical(self, "错误", f"无法保存文件: {e}")
+                show_error(self, f"无法保存文件: {e}", title="错误")
 
     def get_strategy_file(self) -> str:
         """获取当前策略文件路径"""
@@ -312,34 +331,13 @@ class StrategyPage(QWidget):
     def _download_remote_strategy(self):
         """下载并解密远程策略"""
         if not self.current_remote_strategy_id:
-            QMessageBox.warning(self, "提示", "请先选择要下载的远端策略")
+            show_warning(self, "请先选择要下载的远端策略")
             return
 
         self.strategy_manager.download_strategy(self.current_remote_strategy_id)
-
-    def _run_remote_strategy_locally(self):
-        """在本地执行下载的远程策略"""
-        if not self.current_remote_strategy_id:
-            QMessageBox.warning(self, "提示", "请先选择要执行的远端策略")
-            return
-
-        success, strategy_code = self.strategy_manager.run_strategy_locally(
-            self.current_remote_strategy_id
-        )
-        if success and strategy_code:
-            try:
-                # 加载到代码编辑器
-                self.code_editor.setPlainText(strategy_code)
-                self.current_file = None  # 标记为未保存的远程策略
-                self.file_label.setText(f"远程策略: {self.current_remote_strategy_id}")
-
-                QMessageBox.information(self, "成功", "远程策略已加载到本地编辑器")
-
-            except Exception as e:
-                QMessageBox.critical(self, "加载失败", f"无法加载策略到编辑器: {e}")
 
     def _clear_download_cache(self):
         """清除下载缓存"""
         self.strategy_manager.clear_download_cache()
         self._safe_ui_update(lambda: (self.download_info.clear(),))
-        QMessageBox.information(self, "成功", "下载缓存已清除")
+        show_info(self, "下载缓存已清除", title="成功")

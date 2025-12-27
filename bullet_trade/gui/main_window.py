@@ -2,23 +2,16 @@
 BulletTrade 主窗口
 """
 
-import sys
 from pathlib import Path
-from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
     QTabWidget,
-    QStatusBar,
-    QMenuBar,
-    QMenu,
     QMessageBox,
     QFileDialog,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction
 
 from .pages.backtest_page import BacktestPage
 from .pages.config_page import ConfigPage
@@ -28,6 +21,7 @@ from .pages.report_page import ReportPage
 from .pages.strategy_page import StrategyPage
 from .auth_manager import AuthManager
 from .theme import get_main_stylesheet
+from .message_helper import show_info, show_warning, show_error, show_confirm
 from ..__version__ import __version__
 
 
@@ -130,12 +124,13 @@ class MainWindow(QMainWindow):
         self.strategy_page = StrategyPage(self.auth_manager)
         self.tabs.addTab(self.strategy_page, "策略管理")
 
-        # 回测页面
-        self.backtest_page = BacktestPage()
+        # 回测页面（传入 AuthManager 以支持远端策略功能）
+        self.backtest_page = BacktestPage(self.auth_manager)
         self.tabs.addTab(self.backtest_page, "回测")
 
         # 实盘页面
-        self.live_page = LivePage()
+        # 传入 AuthManager，以便实盘页面也能访问远端策略/认证
+        self.live_page = LivePage(self.auth_manager)
         self.tabs.addTab(self.live_page, "实盘交易")
 
         # 参数优化页面
@@ -157,7 +152,11 @@ class MainWindow(QMainWindow):
     def _open_strategy(self):
         """打开策略文件"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择策略文件", str(Path.home()), "Python文件 (*.py);;所有文件 (*)"
+            self,
+            "选择策略文件",
+            str(Path.home()),
+            "Python文件 (*.py);;所有文件 (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if file_path:
             # 通知所有页面加载文件
@@ -170,15 +169,14 @@ class MainWindow(QMainWindow):
 
     def _show_settings(self):
         """显示设置对话框"""
-        QMessageBox.information(self, "设置", "设置功能开发中...")
+        show_info(self, "设置功能开发中...", title="设置")
 
     def _show_user_info(self):
         """显示用户信息"""
         user_info = self.auth_manager.get_user_info()
         if user_info:
-            QMessageBox.information(
+            show_info(
                 self,
-                "用户信息",
                 f"""
                 <h3>用户详情</h3>
                 <p><b>用户名:</b> {user_info.get('username', '未知')}</p>
@@ -186,51 +184,78 @@ class MainWindow(QMainWindow):
                 <p><b>邮箱:</b> {user_info.get('email', '未设置')}</p>
                 <p><b>超级管理员:</b> {'是' if user_info.get('is_super_admin', False) else '否'}</p>
                 """,
+                title="用户信息",
             )
         else:
-            QMessageBox.warning(self, "错误", "无法获取用户信息")
+            show_warning(self, "无法获取用户信息", title="错误")
 
     def _logout(self):
         """用户登出"""
-        reply = QMessageBox.question(
+        if show_confirm(
             self,
-            "确认登出",
             "确定要登出当前用户吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
+            title="确认登出",
+            default_ok=False,
+        ):
             self.auth_manager.logout()
-            QMessageBox.information(self, "登出成功", "您已成功登出系统")
+            show_info(self, "您已成功登出系统", title="登出成功")
             self.close()
 
     def _show_about(self):
         """显示关于对话框"""
-        QMessageBox.about(
-            self,
-            "关于 BulletTrade",
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setWindowTitle("关于 BulletTrade")
+        msg_box.setText(
             f"""
             <h2>BulletTrade</h2>
             <p>专业的量化交易系统</p>
             <p>版本: {__version__}</p>
             <p>兼容聚宽API，支持多数据源和实盘交易</p>
             <p><a href="https://github.com/BulletTrade/bullet-trade">GitHub</a></p>
-            """,
+            """
         )
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg_box.button(QMessageBox.StandardButton.Ok).setText("确定")
+        msg_box.setStyleSheet(f"""
+            QMessageBox {{
+                background-color: {COLORS['bg_primary']};
+            }}
+            QMessageBox QLabel {{
+                color: {COLORS['text_primary']};
+                min-width: 350px;
+                min-height: 60px;
+                padding: 12px;
+            }}
+            QMessageBox QPushButton {{
+                background-color: {COLORS['primary']};
+                color: {COLORS['text_white']};
+                border: none;
+                border-radius: 6px;
+                padding: 6px 24px;
+                min-width: 90px;
+                min-height: 28px;
+                font-weight: 500;
+            }}
+            QMessageBox QPushButton:hover {{
+                background-color: {COLORS['primary_hover']};
+            }}
+            QMessageBox QPushButton:pressed {{
+                background-color: {COLORS['primary_dark']};
+            }}
+        """)
+        msg_box.exec()
 
     def closeEvent(self, event):
         """关闭事件处理"""
         # 检查是否有正在运行的任务
         if self.live_page.is_running():
-            reply = QMessageBox.question(
+            if not show_confirm(
                 self,
-                "确认退出",
                 "实盘交易正在运行，确定要退出吗？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.No:
+                title="确认退出",
+                default_ok=False,
+            ):
                 event.ignore()
                 return
 

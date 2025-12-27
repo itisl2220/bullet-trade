@@ -31,6 +31,7 @@ except ImportError:
     WEBENGINE_AVAILABLE = False
 
 from ..theme import get_button_primary_style
+from ..message_helper import show_info, show_warning, show_error, show_confirm
 
 
 class ReportPage(QWidget):
@@ -110,7 +111,10 @@ class ReportPage(QWidget):
     def _browse_result_dir(self):
         """浏览结果目录"""
         dir_path = QFileDialog.getExistingDirectory(
-            self, "选择回测结果目录", self.result_dir_edit.text() or "./backtest_results"
+            self,
+            "选择回测结果目录",
+            self.result_dir_edit.text() or "./backtest_results",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if dir_path:
             self.result_dir_edit.setText(dir_path)
@@ -127,7 +131,8 @@ class ReportPage(QWidget):
             self,
             "保存报告",
             self.output_file_edit.text() or f"report.{format_ext}",
-            f"{format_ext.upper()}文件 (*.{format_ext});;所有文件 (*)"
+            f"{format_ext.upper()}文件 (*.{format_ext});;所有文件 (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if file_path:
             self.output_file_edit.setText(file_path)
@@ -137,23 +142,23 @@ class ReportPage(QWidget):
         # 验证参数
         result_dir = self.result_dir_edit.text().strip()
         if not result_dir or not Path(result_dir).exists():
-            QMessageBox.warning(self, "错误", "请选择有效的回测结果目录")
+            show_warning(self, "请选择有效的回测结果目录", title="错误")
             return
-        
+
         output_file = self.output_file_edit.text().strip()
         if not output_file:
             # 使用默认路径
             result_path = Path(result_dir)
             format_ext = self.format_combo.currentText()
             output_file = str(result_path / f"report.{format_ext}")
-        
+
         try:
             from bullet_trade.core.analysis import generate_report, generate_html_report
-            
+
             # 生成报告
             self.info_text.clear()
             self.info_text.append("正在生成报告...")
-            
+
             # 根据格式生成不同类型的报告
             if self.format_combo.currentText() == "html":
                 generate_html_report(
@@ -163,30 +168,30 @@ class ReportPage(QWidget):
                 report_file = output_file if output_file != result_dir else str(Path(result_dir) / "report.html")
             else:
                 # PDF格式暂不支持，提示用户
-                QMessageBox.warning(self, "提示", "PDF格式报告暂未实现，将生成HTML报告")
+                show_warning(self, "PDF格式报告暂未实现，将生成HTML报告")
                 generate_html_report(
                     results_dir=result_dir,
                     output_file=str(Path(result_dir) / "report.html"),
                 )
                 report_file = str(Path(result_dir) / "report.html")
-            
+
             self.info_text.append(f"报告已生成: {report_file}")
             self.open_btn.setEnabled(True)
             self.open_btn.setProperty("report_file", report_file)
-            
-            QMessageBox.information(self, "成功", f"报告已生成:\n{report_file}")
+
+            show_info(self, f"报告已生成:\n{report_file}", title="成功")
         except Exception as e:
             error_msg = f"生成报告失败: {e}"
             self.info_text.append(error_msg)
             import traceback
             self.info_text.append(traceback.format_exc())
-            QMessageBox.critical(self, "错误", error_msg)
-    
+            show_error(self, error_msg, title="错误")
+
     def _open_report(self):
         """打开报告"""
         report_file = self.open_btn.property("report_file")
         if not report_file or not Path(report_file).exists():
-            QMessageBox.warning(self, "错误", "报告文件不存在")
+            show_warning(self, "报告文件不存在", title="错误")
             return
         # 使用系统默认浏览器打开报告文件（回退到外部浏览器打开）
         report_path = Path(report_file).absolute()
@@ -194,5 +199,5 @@ class ReportPage(QWidget):
             webbrowser.open(report_path.as_uri())
             self.info_text.append(f"已在默认浏览器中打开: {report_file}")
         except Exception as e:
-            QMessageBox.warning(self, "打开失败", f"无法在浏览器中打开报告: {e}")
+            show_warning(self, f"无法在浏览器中打开报告: {e}", title="打开失败")
 

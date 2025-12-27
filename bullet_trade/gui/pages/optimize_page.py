@@ -22,6 +22,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, QDate
 from PyQt6.QtGui import QFont
 
 from ..theme import get_button_primary_style, get_log_text_style
+from ..message_helper import show_info, show_warning, show_error, show_confirm
 
 
 class OptimizeWorker(QThread):
@@ -179,7 +180,11 @@ class OptimizePage(QWidget):
     def _browse_strategy_file(self):
         """浏览策略文件"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择策略文件", str(Path.home()), "Python文件 (*.py);;所有文件 (*)"
+            self,
+            "选择策略文件",
+            str(Path.home()),
+            "Python文件 (*.py);;所有文件 (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if file_path:
             self.strategy_file_edit.setText(file_path)
@@ -187,7 +192,11 @@ class OptimizePage(QWidget):
     def _browse_params_file(self):
         """浏览参数配置文件"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择参数配置文件", str(Path.home()), "JSON文件 (*.json);;所有文件 (*)"
+            self,
+            "选择参数配置文件",
+            str(Path.home()),
+            "JSON文件 (*.json);;所有文件 (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if file_path:
             self.params_file_edit.setText(file_path)
@@ -195,7 +204,11 @@ class OptimizePage(QWidget):
     def _browse_output_file(self):
         """浏览输出文件"""
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "保存优化结果", self.output_file_edit.text(), "CSV文件 (*.csv);;所有文件 (*)"
+            self,
+            "保存优化结果",
+            self.output_file_edit.text(),
+            "CSV文件 (*.csv);;所有文件 (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if file_path:
             self.output_file_edit.setText(file_path)
@@ -209,40 +222,44 @@ class OptimizePage(QWidget):
         }
 
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "保存参数模板", "params_template.json", "JSON文件 (*.json);;所有文件 (*)"
+            self,
+            "保存参数模板",
+            "params_template.json",
+            "JSON文件 (*.json);;所有文件 (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if file_path:
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
                     json.dump(template, f, indent=2, ensure_ascii=False)
                 self.params_file_edit.setText(file_path)
-                QMessageBox.information(self, "成功", "参数模板已创建")
+                show_info(self, "参数模板已创建", title="成功")
             except Exception as e:
-                QMessageBox.critical(self, "错误", f"无法创建模板: {e}")
+                show_error(self, f"无法创建模板: {e}", title="错误")
 
     def _start_optimize(self):
         """开始优化"""
         # 验证参数
         strategy_file = self.strategy_file_edit.text().strip()
         if not strategy_file or not Path(strategy_file).exists():
-            QMessageBox.warning(self, "错误", "请选择有效的策略文件")
+            show_warning(self, "请选择有效的策略文件", title="错误")
             return
 
         params_file = self.params_file_edit.text().strip()
         if not params_file or not Path(params_file).exists():
-            QMessageBox.warning(self, "错误", "请选择有效的参数配置文件")
+            show_warning(self, "请选择有效的参数配置文件", title="错误")
             return
 
         start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
         end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
 
         if start_date >= end_date:
-            QMessageBox.warning(self, "错误", "开始日期必须早于结束日期")
+            show_warning(self, "开始日期必须早于结束日期", title="错误")
             return
 
         output_file = self.output_file_edit.text().strip()
         if not output_file:
-            QMessageBox.warning(self, "错误", "请指定输出文件")
+            show_warning(self, "请指定输出文件", title="错误")
             return
 
         # 解析进程数
@@ -254,7 +271,7 @@ class OptimizePage(QWidget):
                 if processes < 1:
                     raise ValueError
             except ValueError:
-                QMessageBox.warning(self, "错误", "进程数必须是正整数")
+                show_warning(self, "进程数必须是正整数", title="错误")
                 return
 
         # 启动工作线程
@@ -298,9 +315,9 @@ class OptimizePage(QWidget):
         self.stop_btn.setEnabled(False)
 
         if exit_code == 0:
-            QMessageBox.information(self, "成功", "参数优化完成！")
+            show_info(self, "参数优化完成！", title="成功")
         else:
-            QMessageBox.warning(self, "错误", "优化过程中出现错误，请查看日志")
+            show_warning(self, "优化过程中出现错误，请查看日志", title="错误")
 
     def _on_result_ready(self, result_file):
         """结果就绪"""

@@ -75,14 +75,15 @@ class APIClient:
             if response.status_code == 200:
                 try:
                     return True, response.json()
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, requests.exceptions.JSONDecodeError):
+                    # 响应不是JSON格式，返回原始文本
                     return True, response.text
             else:
                 # 尝试解析错误响应
                 try:
                     error_data = response.json()
                     error_msg = error_data.get("error", f"HTTP {response.status_code}")
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, requests.exceptions.JSONDecodeError):
                     error_msg = response.text or f"HTTP {response.status_code}"
 
                 _LOGGER.error(f"API request failed: {error_msg}")
@@ -245,7 +246,7 @@ class APIClient:
                 try:
                     error_data = response.json()
                     error_msg = error_data.get("error", f"HTTP {response.status_code}")
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, requests.exceptions.JSONDecodeError):
                     error_msg = response.text or f"HTTP {response.status_code}"
 
                 _LOGGER.error(f"Download strategy failed: {error_msg}")
