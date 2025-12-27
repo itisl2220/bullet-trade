@@ -127,6 +127,34 @@ class LiveWorker(QThread):
             try:
                 # 如果提供了内存中解密源码，则写入临时文件并使用该文件（LiveEngine 需要文件路径）
                 if isinstance(self.decrypted_source, str) and self.decrypted_source:
+                    # 在策略代码前添加依赖预导入代码
+                    # 这样即使策略代码中有 `from jqdata import *` 也能正常工作
+                    preamble = """# 自动注入的依赖预导入代码
+try:
+    import jqdatasdk
+
+    # 为了支持 `from jqdata import *`，将 jqdatasdk 的所有公开属性导入到全局命名空间
+    # 这样策略代码可以直接使用 jqdatasdk 的所有函数
+    _jqdata_public_attrs = [name for name in dir(jqdatasdk) if not name.startswith('_')]
+    for _attr in _jqdata_public_attrs:
+        try:
+            globals()[_attr] = getattr(jqdatasdk, _attr)
+        except Exception:
+            pass
+
+    # 同时也提供 jqdata 和 jqdatasdk 别名
+    jqdata = jqdatasdk
+
+    # 导入其他常用依赖
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime, timedelta, date
+
+except ImportError as e:
+    # 如果依赖不存在，忽略错误，让策略运行时报错
+    pass
+
+"""
                     tf = tempfile.NamedTemporaryFile(
                         delete=False,
                         suffix=".py",
@@ -134,11 +162,12 @@ class LiveWorker(QThread):
                         mode="w",
                         encoding="utf-8",
                     )
-                    tf.write(self.decrypted_source)
+                    tf.write(preamble + self.decrypted_source)
                     tf.flush()
                     tf.close()
                     temp_strategy_path = tf.name
                     strategy_path = temp_strategy_path
+                    self.output.emit("已创建临时策略文件（包含依赖预注入）")
                 else:
                     strategy_path = self.strategy_file
 

@@ -17,19 +17,6 @@ class MessageHelper:
         # 设置窗口属性
         msg_box.setWindowTitle("提示")
 
-        # 根据类型设置图标
-        if msg_type == "warning":
-            msg_box.setIcon(QMessageBox.Icon.Warning)
-        elif msg_type == "error":
-            msg_box.setIcon(QMessageBox.Icon.Critical)
-        elif msg_type == "question":
-            msg_box.setIcon(QMessageBox.Icon.Question)
-        elif msg_type == "info":
-            msg_box.setIcon(QMessageBox.Icon.Information)
-        elif msg_type == "success":
-            # 使用 Information 图标代表成功
-            msg_box.setIcon(QMessageBox.Icon.Information)
-
         # 应用样式
         msg_box.setStyleSheet(
             f"""
@@ -38,7 +25,7 @@ class MessageHelper:
             }}
             QMessageBox QLabel {{
                 color: {COLORS['text_primary']};
-                min-width: 150px;
+                min-width: 350px;
                 min-height: 60px;
                 padding: 12px;
             }}

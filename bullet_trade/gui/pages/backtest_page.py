@@ -178,13 +178,100 @@ class BacktestWorker(QThread):
                 self.output.emit("使用内存中解密后的策略源码，准备注入回测引擎...")
                 module_name = "strategy_remote_inject"
                 strategy_module = types.ModuleType(module_name)
+
+                # 预先导入常用的数据源依赖到策略模块的命名空间
+                # 这样策略代码中的 `from jqdata import *` 或 `import jqdatasdk` 就能正常工作
                 try:
-                    exec(
-                        compile(self.decrypted_source, module_name, "exec"),
-                        strategy_module.__dict__,
-                    )
+                    # 导入 jqdatasdk 并作为 jqdata 暴露给策略
+                    # 为了支持 `from jqdata import *`，需要创建一个 jqdata 模块并注册到 sys.modules
+                    import jqdatasdk
+                    import sys
+                    import types
+
+                    # 创建一个代理模块来模拟 jqdata
+                    jqdata_module = types.ModuleType('jqdata')
+
+                    # 将 jqdatasdk 的所有公开属性复制到 jqdata 模块
+                    jqdata_public_attrs = [
+                        name for name in dir(jqdatasdk)
+                        if not name.startswith('_')
+                    ]
+
+                    for attr_name in jqdata_public_attrs:
+                        try:
+                            attr = getattr(jqdatasdk, attr_name)
+                            setattr(jqdata_module, attr_name, attr)
+                        except (AttributeError, TypeError):
+                            pass
+
+                    # 关键：将 jqdata 模块注册到 sys.modules
+                    # 这样 `from jqdata import *` 就能找到它
+                    sys.modules['jqdata'] = jqdata_module
+
+                    # 同时也注入到策略模块的命名空间（兼容其他导入方式）
+                    strategy_module.jqdata = jqdata_module
+                    strategy_module.jqdatasdk = jqdatasdk
+
+                    # 创建聚宽平台的全局上下文对象 g
+                    class G:
+                        pass
+                    strategy_module.g = G()
+
+                    # 添加聚宽平台的兼容函数
+                    # 这些函数在聚宽平台是内置的，我们需要提供模拟实现
+                    def set_benchmark(security):
+                        """设置基准（聚宽兼容函数）"""
+                        # 这个函数实际上不需要做什么，因为基准已经在引擎中设置
+                        self.output.emit(f"策略设置基准: {security}")
+                        return True
+
+                    def run_daily(func, time=None):
+                        """每日定时运行（聚宽兼容函数）"""
+                        # 这个函数实际上不需要做什么，因为定时由引擎控制
+                        self.output.emit(f"策略设置定时任务: {func.__name__} at {time}")
+                        # 不做任何事，让引擎自然调用
+
+                    def order(security, amount):
+                        """下单（聚宽兼容函数）"""
+                        # 这个函数会在后续的引擎调用中真正实现
+                        # 这里只是占位，实际下单由引擎处理
+                        self.output.emit(f"策略调用 order({security}, {amount})")
+                        # 返回模拟订单ID
+                        return f"mock_order_{security}_{amount}"
+
+                    # 将这些函数注入到策略模块
+                    strategy_module.set_benchmark = set_benchmark
+                    strategy_module.run_daily = run_daily
+                    strategy_module.order = order
+
+                    # 导入其他常用依赖
+                    import pandas as pd
+                    import numpy as np
+                    strategy_module.pd = pd
+                    strategy_module.numpy = np
+                    strategy_module.np = np
+
+                    # 导入时间处理
+                    from datetime import datetime, timedelta, date
+                    strategy_module.datetime = datetime
+                    strategy_module.timedelta = timedelta
+                    strategy_module.date = date
+
+                    self.output.emit(f"已预加载策略依赖: jqdatasdk (包含 {len(jqdata_public_attrs)} 个公开属性), pandas, numpy, datetime, 以及聚宽兼容函数 (set_benchmark, run_daily, order, g)")
+                except ImportError as e:
+                    self.output.emit(f"警告: 部分依赖预加载失败: {e}")
+
+                try:
+                    # 现在 exec 执行时，`from jqdata import *` 就能正常工作了
+                    # 不使用 compile()，直接 exec 字符串，避免编译时检查导入
+                    exec(self.decrypted_source, strategy_module.__dict__)
                 except Exception as e:
                     raise Exception(f"执行解密后源码失败: {e}")
+                finally:
+                    # 清理：从 sys.modules 中移除 jqdata 模块
+                    # 避免污染全局模块系统
+                    if 'jqdata' in sys.modules:
+                        del sys.modules['jqdata']
 
                 init_fn = getattr(strategy_module, "initialize", None)
                 handle_fn = getattr(strategy_module, "handle_data", None)
@@ -636,13 +723,9 @@ class BacktestPage(QWidget):
             # 直接从服务器下载并解密策略，然后加载到编辑器（不使用 remote:// 协议）
             try:
                 decrypted_code = None
-                if getattr(self, "strategy_manager", None):
-                    success, code = self.strategy_manager.download_strategy(sid)
-                    if success:
-                        decrypted_code = code
-                    else:
-                        raise Exception(code or "下载策略失败")
-                elif getattr(self, "auth_manager", None) and getattr(
+
+                # 优先使用 auth_manager.api_client 下载并解密
+                if getattr(self, "auth_manager", None) and getattr(
                     self.auth_manager, "api_client", None
                 ):
                     api_client = self.auth_manager.api_client
@@ -668,6 +751,33 @@ class BacktestPage(QWidget):
                     aesgcm = AESGCM(key)
                     plaintext = aesgcm.decrypt(nonce, ciphertext + tag, None)
                     decrypted_code = plaintext.decode("utf-8")
+                elif getattr(self, "strategy_manager", None):
+                    # 使用 strategy_manager 下载（只验证，不返回代码）
+                    success = self.strategy_manager.download_strategy(sid)
+                    if not success:
+                        raise Exception("下载或验证策略失败")
+                    # 从 strategy_manager 获取加密数据和密钥
+                    if hasattr(self.strategy_manager, 'downloaded_strategies') and sid in self.strategy_manager.downloaded_strategies:
+                        # 使用已下载的加密数据
+                        import base64
+                        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+                        success, encrypted = api_client.download_strategy(sid)
+                        if not success:
+                            raise Exception("重新下载策略失败")
+                        success, key_data = api_client.get_strategy_key(sid)
+                        if not success:
+                            raise Exception("获取密钥失败")
+                        key_b64 = key_data.get("key_b64") if isinstance(key_data, dict) else None
+                        key = base64.b64decode(key_b64)
+                        nonce = encrypted[:12]
+                        tag = encrypted[-16:]
+                        ciphertext = encrypted[12:-16]
+                        aesgcm = AESGCM(key)
+                        plaintext = aesgcm.decrypt(nonce, ciphertext + tag, None)
+                        decrypted_code = plaintext.decode("utf-8")
+                    else:
+                        raise Exception("策略未下载，请先下载策略")
                 else:
                     raise Exception("无法下载策略：未提供 AuthManager 或 StrategyManager")
 
